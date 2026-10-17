@@ -22,3 +22,9 @@ Foundational specifications for our solution include:
 * Verification/user/personal information safety features:
     * Users would have to verify their email that they register their account with. Otherwise, an error pop-up would appear and the user will not be allowed to interact with any of the app’s features except for the login and account creation.
     * Each user, upon the creation of their account, might share personal information that allows socialization between users to expand onto other platforms (e.g., phone number, WhatsApp, Instagram handles, DIscord usernames, etc.). What the user chooses to share is up to their discretion, but this is for their own benefit in order to make new friends and relationships from this application. Encryption features can be implemented to safeguard personal contact information and exchanges in the chat box.
+
+## UI Sketches
+
+These loosely follow the specifications outlined in order in our Solution section.
+<img width="1862" height="1438" alt="uisketch" src="https://github.com/user-attachments/assets/30086722-f264-48ba-9155-4a05e41a0099" />
+
