@@ -26,5 +26,6 @@ Foundational specifications for our solution include:
 ## UI Sketches
 
 These loosely follow the specifications outlined in order in our Solution section.
+
 <img width="1862" height="1438" alt="uisketch" src="https://github.com/user-attachments/assets/30086722-f264-48ba-9155-4a05e41a0099" />
 
