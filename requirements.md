@@ -44,11 +44,7 @@
 - When a new account is created, a verification link should be sent to the inputted email address.
 - When the new account link is clicked from the email, the user's account is verified.
 - If the new account link from the email is not clicked, the user's new account cannot be accessed.
-- If the new account link from the email is not clicked, the user's new account is flagged as unverified.
-- Any unverified accounts should be deleted after 48 hours.
-- Unverified accounts cannot receive matches.
-- Users should receive an email requesting reverification if no account activity has been recorded in the three months since their last detected activity.
-- If users receive a reverification request and do not click the link in the email within one week, their account is deleted.
+
 
 ## 4. Chat Messaging / Communication with Other Users
 
