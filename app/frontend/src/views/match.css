@@ -1,0 +1,90 @@
+/* MatchView. Mobile-first; uses the tokens in index.css. */
+
+.match {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.match__title {
+  margin: 16px 0 8px;
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+.match__pair {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.match__person {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.match__person figcaption {
+  max-width: 34vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.match__note {
+  font-size: 2rem;
+  color: var(--accent);
+}
+
+.match__percent {
+  margin: 8px 0 0;
+  font-size: 2.5rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.match__question {
+  margin: 0;
+  color: var(--muted);
+}
+
+.match__actions {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  max-width: 320px;
+}
+
+.match__button {
+  flex: 1;
+  min-height: 48px;
+  padding: 10px 16px;
+  border: 1.5px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.match__button--secondary {
+  background: transparent;
+  color: var(--accent);
+}
+
+.match__problem {
+  width: 100%;
+  margin: 8px 0 0;
+}
+
+.match__problem a {
+  color: var(--accent);
+  font-weight: 600;
+}
