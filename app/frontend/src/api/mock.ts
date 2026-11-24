@@ -1,18 +1,26 @@
 /**
- * In-memory fake of the backend, implementing every client API. Used for local development
- * (the Nov 16 "mock controllers, local mock database" milestone) and as the default backend in
- * view tests. It follows each method's spec but none of the real algorithms: songs rotate in
- * order, and every `matchEvery` swipes a match with a random other user is offered.
+ * In-memory fake of the backend, implementing every client API. It is what the app runs on until
+ * VITE_API_BASE_URL is set, and the default backend in view tests.
  *
- * Abstraction function: the backend state of a small app whose accounts are `accounts`
- * (by email), whose users' active songs are `songs[activeIndex.get(userId)]`, and whose
- * proposed matches are `matches`.
- * Rep invariant: every userId in activeIndex, liked, swipes and matches belongs to an account;
- * every activeIndex value is in [0, songs.length); a match's confirmed and declined sets are
- * disjoint and contain only its two users; chatId is non-null iff both users confirmed.
+ * It plays the server half of each controller over models that follow the Java stubs:
+ * MockTasteModel, MockSuggestionModel, MockMatchModel and MockChatBackend. Matches come from taste:
+ * liking songs moves your Taste Vector, and every few swipes you are offered the most compatible
+ * active user. The fake users (MockBots) have liked songs from the same library and answer on
+ * their own, so nothing is matched automatically at login.
+ *
+ * Abstraction function: the backend state of a small app whose accounts are `accounts` (by email)
+ * and whose users' active songs are `active`; taste, suggestions, matches and chats live in the
+ * corresponding models.
+ * Rep invariant: every userId in active, liked and swipes belongs to an account; each model's own
+ * rep invariant holds.
  */
 import type { AccountApi, Api, MatchApi, SongApi } from './client';
-import { SEED_ACCOUNTS, SEED_PENDING_MATCH, SEED_SONGS } from './mockSeed';
+import { MockBots } from './mockBots';
+import { MockChatBackend } from './mockChat';
+import { MockMatchModel } from './mockMatch';
+import { SEED_ACCOUNTS, SEED_BOTS, SEED_CHATS, SEED_PENDING_MATCH, SEED_SONGS, songsInGenre } from './mockSeed';
+import { MockSuggestionModel, type SongOrder } from './mockSuggestions';
+import { MockTasteModel, UNDO_LIMIT } from './mockTaste';
 import type {
   CreateAccountResult,
   Feedback,
@@ -20,9 +28,12 @@ import type {
   Match,
   Song,
   SwipeResult,
+  UndoResult,
   UserProfile,
 } from './types';
 import { isWellFormedEmail } from './validation';
+
+const HOUR_MS = 60 * 60 * 1000;
 
 interface MockAccount {
   userId: string;
@@ -31,30 +42,30 @@ interface MockAccount {
   verified: boolean;
   username: string;
   pictureUrl: string | null;
-}
-
-interface MatchState {
-  match: Match;
-  confirmed: Set<string>;
-  declined: Set<string>;
-  chatId: string | null;
+  /** The unused token in the account's verification email, if any. */
+  verificationToken: string | null;
 }
 
 /** Tuning for the mock. */
 export interface MockOptions {
   /** Artificial delay on every call, so pending states (disabled buttons) are visible. Default 0. */
   readonly latencyMs?: number;
-  /** A match is offered on every n-th swipe. Default 5. Requires: >= 1. */
+  /** Offer a match every n-th swipe instead of a random 5 to 9. Requires: >= 1. */
   readonly matchEvery?: number;
-  /** Songs to rotate through. Default SEED_SONGS. Requires: non-empty. */
+  /** The song library. Default SEED_SONGS. Requires: more than 5 songs. */
   readonly songs?: readonly Song[];
-  /** Whether to seed SEED_PENDING_MATCH (demo ↔ harmony). Default true. */
+  /** 'taste' (default) follows the suggestion model; 'library' plays in order, for view tests. */
+  readonly songOrder?: SongOrder;
+  /** Whether the fake users take part. Default true. */
+  readonly withBots?: boolean;
+  /** Whether to seed SEED_PENDING_MATCH (demo ↔ harmony). Default false. */
   readonly withPendingMatch?: boolean;
-  /**
-   * Source of randomness for picking matches, returning numbers in [0, 1). Default Math.random;
-   * tests pass a fixed sequence.
-   */
+  /** Whether to seed demo's example chats (SEED_CHATS). Default false. */
+  readonly withSeedChats?: boolean;
+  /** Source of randomness, returning numbers in [0, 1). Default Math.random. */
   readonly random?: () => number;
+  /** The current time in epoch milliseconds. Default Date.now. */
+  readonly now?: () => number;
 }
 
 /** One recorded listen, kept so tests can check what HomeView sent. */
@@ -67,43 +78,71 @@ export interface RecordedListen {
 
 export class MockBackend implements AccountApi, SongApi, MatchApi {
   private readonly accounts = new Map<string, MockAccount>();
-  private readonly songs: readonly Song[];
-  private readonly activeIndex = new Map<string, number>();
+  private readonly active = new Map<string, Song>();
   private readonly liked = new Set<string>();
   private readonly swipes = new Map<string, number>();
-  private readonly matches = new Map<string, MatchState>();
+  /** Each user's swipes that can be undone, oldest first: the song left and its like button. */
+  private readonly undoStacks = new Map<string, { song: Song; liked: boolean }[]>();
   private readonly latencyMs: number;
-  private readonly matchEvery: number;
   private readonly random: () => number;
+  private readonly now: () => number;
   private nextId = 1;
 
   /** Every listen recorded by submitFeedback, oldest first. */
   readonly listens: RecordedListen[] = [];
+  /** MusicTasteModel. */
+  readonly taste = new MockTasteModel();
+  /** SongSuggestionModel. */
+  readonly suggestions: MockSuggestionModel;
+  /** MatchModel. */
+  readonly matchModel: MockMatchModel;
+  /** The fake users. */
+  readonly bots: MockBots;
+  /** The chat half of the mock, sharing this backend's accounts and latency. */
+  readonly chatBackend: MockChatBackend;
 
   /**
    * Requires: options satisfy MockOptions' requirements.
-   * Effects: creates a mock seeded with SEED_ACCOUNTS and, unless options.withPendingMatch is
-   *          false, SEED_PENDING_MATCH.
+   * Effects: creates a mock with the seed accounts and, as options say, bots and example data.
+   * @throws Error if options.matchEvery is below 1 or the library has 5 songs or fewer
    */
   constructor(options: MockOptions = {}) {
     this.latencyMs = options.latencyMs ?? 0;
-    this.matchEvery = options.matchEvery ?? 5;
-    this.songs = options.songs ?? SEED_SONGS;
     this.random = options.random ?? Math.random;
-    if (this.matchEvery < 1 || this.songs.length === 0) {
-      throw new Error('MockBackend: matchEvery must be >= 1 and songs non-empty');
+    this.now = options.now ?? Date.now;
+    if (options.matchEvery !== undefined && options.matchEvery < 1) {
+      throw new Error('MockBackend: matchEvery must be >= 1');
     }
+    this.suggestions = new MockSuggestionModel(options.songs ?? SEED_SONGS, options.songOrder);
+    this.matchModel = new MockMatchModel({
+      random: this.random,
+      newId: (prefix) => this.newId(prefix),
+      matchEvery: options.matchEvery,
+    });
+    this.chatBackend = new MockChatBackend({
+      profileOf: (userId) => toProfile(this.accountById(userId)),
+      delay: () => this.delay(),
+      now: this.now,
+      onUserMessage: (chatId, _senderId, otherId) => {
+        if (this.bots.isBot(otherId)) this.bots.onUserMessage(chatId, otherId);
+      },
+    });
+    this.bots = new MockBots({
+      now: this.now,
+      random: this.random,
+      decide: (matchId, botId, accepted) => void this.applyDecision(matchId, botId, accepted),
+      say: (chatId, botId, text) => void this.chatBackend.deliver(chatId, botId, text),
+      sharedLike: (userId, botId) => this.sharedLike(userId, botId),
+    });
+
     for (const a of SEED_ACCOUNTS) {
-      this.accounts.set(a.email, { ...a, pictureUrl: null });
+      this.accounts.set(a.email, { ...a, pictureUrl: null, verificationToken: null });
     }
-    if (options.withPendingMatch ?? true) {
-      this.matches.set(SEED_PENDING_MATCH.match.matchId, {
-        match: { ...SEED_PENDING_MATCH.match },
-        confirmed: new Set(SEED_PENDING_MATCH.confirmedBy),
-        declined: new Set(),
-        chatId: null,
-      });
+    if (options.withBots ?? true) this.seedBots();
+    if (options.withPendingMatch ?? false) {
+      this.matchModel.addMatch({ ...SEED_PENDING_MATCH.match }, SEED_PENDING_MATCH.confirmedBy);
     }
+    if (options.withSeedChats ?? false) this.seedChats();
     this.checkRep();
   }
 
@@ -112,31 +151,40 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
   /**
    * Stands in for clicking the link in the verification email (R-SEC-02).
    * Requires: none.
-   * Effects: if an account uses email, it becomes verified.
+   * Effects: if an account uses email, it becomes verified and its link stops working.
    * @returns true iff an account uses email
    */
   verifyEmail(email: string): boolean {
     const account = this.accounts.get(email.trim());
     if (account === undefined) return false;
     account.verified = true;
+    account.verificationToken = null;
     return true;
+  }
+
+  /**
+   * Stands in for the email itself, since the mock can't send one.
+   * Requires: none.
+   * Effects: none.
+   * @returns the in-app path of email's unused verification link, or null if there is none
+   */
+  verificationLinkFor(email: string): string | null {
+    const account = this.accounts.get(email.trim());
+    if (account === undefined || account.verificationToken === null) return null;
+    const query = new URLSearchParams({ userId: account.userId, token: account.verificationToken });
+    return `/verify?${query.toString()}`;
   }
 
   /** Asserts the rep invariant. */
   checkRep(): void {
     const userIds = new Set([...this.accounts.values()].map((a) => a.userId));
-    for (const [userId, index] of this.activeIndex) {
-      assert(userIds.has(userId), 'activeIndex user exists');
-      assert(index >= 0 && index < this.songs.length, 'activeIndex in range');
+    for (const userId of [...this.active.keys(), ...this.liked, ...this.swipes.keys()]) {
+      if (!userIds.has(userId)) throw new Error('MockBackend rep invariant violated: unknown user');
     }
-    for (const { match, confirmed, declined, chatId } of this.matches.values()) {
-      const users = [match.userA, match.userB];
-      assert(match.userA !== match.userB, 'match users differ');
-      assert(users.every((u) => userIds.has(u)), 'match users exist');
-      for (const u of confirmed) assert(users.includes(u) && !declined.has(u), 'confirmed valid');
-      for (const u of declined) assert(users.includes(u), 'declined valid');
-      assert((chatId !== null) === (confirmed.size === 2), 'chat iff both confirmed');
-    }
+    this.taste.checkRep();
+    this.suggestions.checkRep();
+    this.matchModel.checkRep();
+    this.chatBackend.checkRep();
   }
 
   // ----- AccountApi -----
@@ -147,7 +195,7 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
     if (account === undefined) return { result: 'NO_ACCOUNT' };
     if (account.password !== password) return { result: 'WRONG_PASSWORD' };
     if (!account.verified) return { result: 'NOT_VERIFIED' };
-    return { result: 'SUCCESS', userId: account.userId };
+    return { result: 'SUCCESS', userId: account.userId, token: `mock-session-${account.userId}` };
   }
 
   async createAccount(email: string, password: string, confirmPassword: string): Promise<CreateAccountResult> {
@@ -156,17 +204,28 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
     if (!isWellFormedEmail(trimmed)) return 'INVALID_EMAIL';
     if (password === '' || password !== confirmPassword) return 'PASSWORDS_DO_NOT_MATCH';
     if (this.accounts.has(trimmed)) return 'EMAIL_IN_USE';
-    const userId = this.newId('u');
     this.accounts.set(trimmed, {
-      userId,
+      userId: this.newId('u'),
       email: trimmed,
       password,
       verified: false,
-      username: trimmed.split('@')[0],
+      username: '', // a blank account (R-ACC-09), so a user's email is never shown to others
       pictureUrl: null,
+      verificationToken: this.newId('verify'),
     });
     this.checkRep();
     return 'PENDING_VERIFICATION';
+  }
+
+  async confirmEmail(userId: string, token: string): Promise<boolean> {
+    await this.delay();
+    const account = [...this.accounts.values()].find((a) => a.userId === userId);
+    if (account === undefined || account.verificationToken === null || account.verificationToken !== token) {
+      return false;
+    }
+    account.verified = true;
+    account.verificationToken = null;
+    return true;
   }
 
   async isVerified(email: string): Promise<boolean> {
@@ -201,8 +260,12 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
   async getCurrentSong(userId: string): Promise<Song> {
     await this.delay();
     this.accountById(userId);
-    if (!this.activeIndex.has(userId)) this.activeIndex.set(userId, 0);
-    return this.songs[this.activeIndex.get(userId)!];
+    let song = this.active.get(userId);
+    if (song === undefined) {
+      song = this.suggestions.nextSuggestion(userId, this.taste.getTasteVector(userId));
+      this.active.set(userId, song);
+    }
+    return song;
   }
 
   async markLiked(userId: string, songId: string): Promise<void> {
@@ -219,101 +282,163 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
     }
     const feedback: Feedback = swipe === 'LIKE' || this.liked.has(userId) ? 'LIKE' : 'SKIP';
     this.listens.push({ userId, songId, feedback, secondsListened });
+    const undoStack = this.undoStacks.get(userId) ?? [];
+    undoStack.push({ song, liked: this.liked.has(userId) });
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    this.undoStacks.set(userId, undoStack);
     this.liked.delete(userId);
 
-    const next = (this.activeIndex.get(userId)! + 1) % this.songs.length;
-    this.activeIndex.set(userId, next);
+    this.taste.recordListen(userId, song, feedback, secondsListened);
+    const taste = this.taste.getTasteVector(userId);
+    const now = this.now();
+    this.matchModel.updateUser(userId, taste, now);
     const count = (this.swipes.get(userId) ?? 0) + 1;
     this.swipes.set(userId, count);
 
-    const offeredMatch = count % this.matchEvery === 0 ? this.proposeMatch(userId) : null;
+    const nextSong = this.suggestions.nextSuggestion(userId, taste);
+    this.active.set(userId, nextSong);
+    const offeredMatch = this.matchModel.shouldOfferMatch(userId, count) ? this.matchModel.findMatch(userId, now) : null;
     this.checkRep();
-    return { nextSong: this.songs[next], offeredMatch };
+    return { nextSong, offeredMatch };
+  }
+
+  async canUndo(userId: string): Promise<boolean> {
+    await this.delay();
+    return (this.undoStacks.get(userId)?.length ?? 0) > 0;
+  }
+
+  async undoLastSwipe(userId: string): Promise<UndoResult | null> {
+    await this.delay();
+    const stack = this.undoStacks.get(userId);
+    const entry = stack?.pop();
+    if (stack === undefined || entry === undefined) return null;
+
+    this.suggestions.returnSuggestion(userId, this.active.get(userId)!);
+    this.active.set(userId, entry.song);
+    this.taste.undoLastListen(userId);
+    this.matchModel.updateUser(userId, this.taste.getTasteVector(userId), this.now());
+    this.swipes.set(userId, this.swipes.get(userId)! - 1);
+    if (entry.liked) this.liked.add(userId);
+    else this.liked.delete(userId);
+    this.listens.splice(this.listens.findLastIndex((listen) => listen.userId === userId), 1);
+    this.checkRep();
+    return { song: entry.song, liked: entry.liked, canUndo: stack.length > 0 };
+  }
+
+  async getTasteVector(userId: string): Promise<readonly number[]> {
+    await this.delay();
+    this.accountById(userId);
+    return this.taste.getTasteVector(userId);
   }
 
   // ----- MatchApi -----
 
-  /** Pending = userId hasn't answered it and nobody declined it (a decline ends the match for both). */
   async getPendingMatches(userId: string): Promise<Match[]> {
     await this.delay();
-    return [...this.matches.values()]
-      .filter((s) => involves(s.match, userId) && !s.confirmed.has(userId) && s.declined.size === 0)
-      .map((s) => s.match);
+    return this.matchModel.getPendingMatches(userId);
   }
 
   async getMatch(matchId: string, userId: string): Promise<Match | null> {
     await this.delay();
-    const state = this.matches.get(matchId);
-    return state !== undefined && involves(state.match, userId) ? state.match : null;
+    return this.matchModel.getMatch(matchId, userId);
   }
 
   async getOtherProfile(match: Match, userId: string): Promise<UserProfile> {
     await this.delay();
     if (!involves(match, userId)) throw new Error('User is not part of this match');
-    return toProfile(this.accountById(match.userA === userId ? match.userB : match.userA));
+    return toProfile(this.accountById(otherUser(match, userId)));
   }
 
   async confirmMatch(match: Match, userId: string): Promise<string | null> {
     await this.delay();
-    const state = this.stateFor(match, userId);
-    state.declined.delete(userId);
-    state.confirmed.add(userId);
-    if (state.confirmed.size === 2 && state.chatId === null) {
-      state.chatId = this.newId('c');
+    const chatId = this.applyDecision(match.matchId, userId, true);
+    const stored = this.matchModel.matchById(match.matchId);
+    const other = otherUser(stored, userId);
+    if (chatId === null && this.bots.isBot(other)) {
+      this.bots.onUserConfirmed(stored.matchId, other, stored.compatibilityPercent);
     }
     this.checkRep();
-    return state.chatId;
+    return chatId;
   }
 
   async declineMatch(match: Match, userId: string): Promise<void> {
     await this.delay();
-    const state = this.stateFor(match, userId);
-    state.confirmed.delete(userId);
-    state.declined.add(userId);
+    this.applyDecision(match.matchId, userId, false);
     this.checkRep();
   }
 
   // ----- helpers -----
 
   /**
-   * TEMPORARY placeholder for MatchModel.findMatch (team request 2026-11-17): proposes a random
-   * other verified user with a random compatibility in [50, 100).
-   * Skips anyone userId already has an open match or a chat with, so there are no duplicates.
-   * Unlike the real spec (R-HOME-22), a declined pair can be proposed again, so the demo never
-   * runs out of matches.
-   * @returns the new match, or null if no candidate is left
+   * Stub MatchController.confirmMatch / declineMatch.
+   * Satisfies: R-HOME-21, R-HOME-22, R-HOME-23.
+   * Requires: userId is one of the match's users.
+   * Effects: records the decision; if it completed the match, creates its one chat.
+   * @returns the match's chat ID, or null if it has none
    */
-  private proposeMatch(userId: string): Match | null {
-    const taken = new Set(
-      [...this.matches.values()]
-        .filter((s) => involves(s.match, userId) && (s.declined.size === 0 || s.chatId !== null))
-        .flatMap((s) => [s.match.userA, s.match.userB]),
-    );
-    const candidates = [...this.accounts.values()].filter(
-      (a) => a.verified && a.userId !== userId && !taken.has(a.userId),
-    );
-    if (candidates.length === 0) return null;
-    const other = candidates[Math.min(candidates.length - 1, Math.floor(this.random() * candidates.length))];
-    const percent = Math.min(99.9, Math.round((50 + this.random() * 50) * 10) / 10);
-    const match: Match = { matchId: this.newId('m'), userA: userId, userB: other.userId, compatibilityPercent: percent };
-    this.matches.set(match.matchId, { match, confirmed: new Set(), declined: new Set(), chatId: null });
-    return match;
+  private applyDecision(matchId: string, userId: string, accepted: boolean): string | null {
+    if (this.matchModel.recordDecision(matchId, userId, accepted)) {
+      const { userA, userB } = this.matchModel.matchById(matchId);
+      const chatId = this.newId('c');
+      this.matchModel.attachChat(matchId, chatId);
+      this.chatBackend.openChat(chatId, userA, userB);
+      if (this.bots.isBot(userA)) this.bots.onChatOpened(chatId, userA, userB);
+      if (this.bots.isBot(userB)) this.bots.onChatOpened(chatId, userB, userA);
+    }
+    return this.matchModel.chatIdOf(matchId);
   }
 
-  private stateFor(match: Match, userId: string): MatchState {
-    const state = this.matches.get(match.matchId);
-    if (state === undefined || !involves(state.match, userId)) {
-      throw new Error('User is not part of this match');
+  /**
+   * Requires: called once, from the constructor, after the accounts exist.
+   * Effects: each bot likes every song in its style through the same taste update as a person,
+   *        and joins the leaderboards with its last-active time.
+   */
+  private seedBots(): void {
+    const now = this.now();
+    for (const bot of SEED_BOTS) {
+      for (const song of songsInGenre(bot.genre)) {
+        this.taste.recordListen(bot.userId, song, 'LIKE', song.durationSeconds);
+      }
+      this.matchModel.updateUser(bot.userId, this.taste.getTasteVector(bot.userId), now - bot.hoursSinceActive * HOUR_MS);
+      if (bot.online) this.chatBackend.setAlwaysOnline(bot.userId);
+      this.bots.add(bot);
     }
-    return state;
+  }
+
+  /**
+   * Requires: called once, from the constructor.
+   * Effects: adds, for each SEED_CHATS entry, a completed match with demo and its chat, so
+   *          findMatch never offers someone demo already chats with.
+   */
+  private seedChats(): void {
+    const demo = 'u-demo';
+    const now = this.now();
+    for (const seed of SEED_CHATS) {
+      this.matchModel.addMatch(
+        { matchId: seed.matchId, userA: seed.partnerId, userB: demo, compatibilityPercent: seed.compatibilityPercent },
+        [seed.partnerId, demo],
+        seed.chatId,
+      );
+      this.chatBackend.openChat(seed.chatId, seed.partnerId, demo, now - seed.messages[0].secondsAgo * 1000);
+      for (const m of seed.messages) {
+        this.chatBackend.deliver(seed.chatId, m.fromDemo ? demo : seed.partnerId, m.text, now - m.secondsAgo * 1000);
+      }
+      if (seed.online) this.chatBackend.setAlwaysOnline(seed.partnerId);
+    }
+  }
+
+  /** @returns the song both users liked that userId liked most recently, or null */
+  private sharedLike(userId: string, botId: string): Song | null {
+    const botLikes = new Set(this.taste.getLikedSongs(botId).map((song) => song.id));
+    return this.taste.getLikedSongs(userId).find((song) => botLikes.has(song.id)) ?? null;
   }
 
   private requireActive(userId: string, songId: string): Song {
-    const index = this.activeIndex.get(userId);
-    if (index === undefined || this.songs[index].id !== songId) {
+    const song = this.active.get(userId);
+    if (song === undefined || song.id !== songId) {
       throw new Error(`${songId} is not the active song for ${userId}`);
     }
-    return this.songs[index];
+    return song;
   }
 
   private accountById(userId: string): MockAccount {
@@ -327,31 +452,40 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
     return `${prefix}-${this.nextId++}`;
   }
 
-  private delay(): Promise<void> {
-    return this.latencyMs > 0 ? new Promise((r) => setTimeout(r, this.latencyMs)) : Promise.resolve();
+  /** Effects: waits the configured latency, then lets the bots do whatever is due. */
+  private async delay(): Promise<void> {
+    if (this.latencyMs > 0) await new Promise((r) => setTimeout(r, this.latencyMs));
+    this.bots.tick();
   }
 }
 
 /**
  * Requires: options satisfy MockOptions' requirements.
  * Effects: none.
- * @returns an Api whose three parts share one MockBackend
+ * @returns an Api whose parts share one MockBackend
  */
 export function createMockApi(options: MockOptions = {}): Api & { backend: MockBackend } {
   const backend = new MockBackend(options);
-  return { account: backend, songs: backend, matches: backend, backend };
+  return {
+    account: backend,
+    songs: backend,
+    matches: backend,
+    chats: backend.chatBackend,
+    demo: { verificationLinkFor: (email) => backend.verificationLinkFor(email) },
+    backend,
+  };
 }
 
 function involves(match: Match, userId: string): boolean {
   return match.userA === userId || match.userB === userId;
 }
 
-function toProfile(a: MockAccount): UserProfile {
-  return { userId: a.userId, username: a.username, profilePictureUrl: a.pictureUrl };
+function otherUser(match: Match, userId: string): string {
+  return match.userA === userId ? match.userB : match.userA;
 }
 
-function assert(condition: boolean, what: string): void {
-  if (!condition) throw new Error(`MockBackend rep invariant violated: ${what}`);
+function toProfile(a: MockAccount): UserProfile {
+  return { userId: a.userId, username: a.username, profilePictureUrl: a.pictureUrl };
 }
 
 function readAsDataUrl(blob: Blob): Promise<string> {

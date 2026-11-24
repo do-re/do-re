@@ -1,30 +1,52 @@
 /**
  * HomeView: the /home page (architecture-stubs-v2.java HomeView; layout from the UI sketch with
  * the tag bubbles removed, OPEN-1). Song name and artist at the top; the album cover in the
- * middle with a left arrow button on its left and a right arrow button on its right; the like
- * and play/pause buttons directly under the cover; the time slider and elapsed time at the
+ * middle with a left arrow button on its left and a right arrow button on its right; the undo,
+ * like and play/pause buttons directly under the cover; the time slider and elapsed time at the
  * bottom; a full-page background coloured from the song. Playback is the Spotify embed (OPEN-6),
  * shown as a compact strip under the controls.
  *
  * Team decision OPEN-2: swipe left or the left arrow → next song; swipe right or the right arrow
- * → like + next song; the like button → like, and the same song keeps playing.
+ * → like + next song; the like button → like, and the same song keeps playing. The undo button
+ * goes back to the previous song. In developer mode, the song's stats appear under the player.
  *
  * Satisfies: R-HOME-03, 04, 05, 06, 07, 08, 09, 10, 13, 14, 15, 16, 20, 24, 25.
  * Communicates with: SongController and MatchController (via useApi()), ViewController (via the
  * router), the player (via usePlayerFactory()).
  */
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useApi } from '../api/ApiContext';
 import type { Feedback, Song } from '../api/types';
+import { SongStatsPanel } from '../components/DevPanels';
 import { PATHS } from '../paths';
 import { usePlayerFactory } from '../player/PlayerContext';
 import type { PlaybackState, SongPlayer } from '../player/types';
 import { useSession } from '../session/SessionContext';
+import { useDevMode } from '../settings/devMode';
 import './home.css';
-import { backgroundFor, formatTime, markMatchShown, nextListened, swipeDirection, wasMatchShown } from './homeLogic';
+import {
+  backgroundFor,
+  markMatchShown,
+  nextListened,
+  readNotice,
+  stampOpacity,
+  swipeDirection,
+  wasMatchShown,
+} from './homeLogic';
+import { LikeBurst } from './LikeBurst';
+import { SongProgress } from './SongProgress';
 
 const STOPPED: PlaybackState = { positionSeconds: 0, durationSeconds: 0, isPaused: true };
+
+/** The old card, flying off screen after a swipe. */
+interface FlyingCard {
+  readonly id: number;
+  readonly song: Song;
+  readonly direction: 'left' | 'right';
+  /** Where the drag left it, so the flight continues from there. */
+  readonly fromX: number;
+}
 
 /**
  * The /home page.
@@ -36,12 +58,16 @@ export function HomeView() {
   const api = useApi();
   const userId = useSession().userId!;
   const navigate = useNavigate();
-  // A one-line message from the previous page, e.g. MatchView after a confirm (OPEN-4).
-  const locationState: unknown = useLocation().state;
-  const notice =
-    typeof locationState === 'object' && locationState !== null && 'notice' in locationState &&
-    typeof locationState.notice === 'string' ? locationState.notice : null;
+  const location = useLocation();
+  // A one-line message from the previous page, e.g. MatchView after a confirm (OPEN-4). It lasts
+  // until the next song, and is cleared from the history so a refresh doesn't bring it back.
+  const [notice, setNotice] = useState(() => readNotice(location.state));
   const createPlayer = usePlayerFactory();
+  const [devMode] = useDevMode();
+
+  useEffect(() => {
+    if (readNotice(location.state) !== null) navigate(location.pathname, { replace: true, state: null });
+  }, [location.state, location.pathname, navigate]);
 
   const [song, setSong] = useState<Song | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -49,8 +75,16 @@ export function HomeView() {
   const [playback, setPlayback] = useState<PlaybackState>(STOPPED);
   const [liked, setLiked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [canUndo, setCanUndo] = useState(false);
   const [dragX, setDragX] = useState(0);
   const [attempt, setAttempt] = useState(0);
+
+  // Animation state.
+  const [cardEntrance, setCardEntrance] = useState<{ id: number; kind: 'next' | 'back' }>({ id: 0, kind: 'next' });
+  const [flyingCard, setFlyingCard] = useState<FlyingCard | null>(null);
+  const [isLeaving, setIsLeaving] = useState(false);
+  const [bursts, setBursts] = useState<readonly number[]>([]);
+  const effectId = useRef(0);
 
   const playerHostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<SongPlayer | null>(null);
@@ -80,12 +114,14 @@ export function HomeView() {
    * Stub displaySong.
    * Satisfies: R-HOME-03, R-HOME-04, R-HOME-05, R-HOME-09, R-HOME-13.
    * Requires: none.
-   * Effects: shows song's title, artist, cover and background; resets the slider, elapsed time
-   *          and listened time to 0; shows the like button as not liked; starts playing song.
+   * Effects: shows song's title, artist, cover and background, with the card arriving forward or
+   *          back; resets the slider, elapsed time and listened time to 0; sets the like button
+   *          to isLiked; starts playing song.
    */
-  const displaySong = useCallback((next: Song) => {
+  const displaySong = useCallback((next: Song, entrance: 'next' | 'back' = 'next', isLiked = false) => {
     setSong(next);
-    setLiked(false);
+    setLiked(isLiked);
+    setCardEntrance((previous) => ({ id: previous.id + 1, kind: entrance }));
     likeRequestRef.current = null;
     listenedRef.current = 0;
     lastPlaybackRef.current = null;
@@ -118,29 +154,52 @@ export function HomeView() {
       },
     );
 
+    api.songs.canUndo(userId).then(
+      (available) => {
+        if (!cancelled) setCanUndo(available);
+      },
+      () => {
+        // Not critical: the undo button stays off until the next swipe.
+      },
+    );
+
     return () => {
       cancelled = true;
     };
   }, [api, userId, navigate, displaySong, attempt]);
 
+  function playBurst() {
+    effectId.current += 1;
+    const id = effectId.current;
+    setBursts((current) => [...current.slice(-2), id]);
+  }
+
   /**
    * Leaves the current song (stub onSwipeLeft / onSwipeRight).
    * Satisfies: R-HOME-14, R-HOME-15, R-HOME-16, R-HOME-24.
    * Requires: none.
-   * Effects: if a song is shown and nothing is in progress, waits for any like still being
-   *          saved, then sends feedback and the time listened to SongController (which counts
-   *          a liked song as LIKE however it is left); then opens the offered match if there
-   *          is one, otherwise displays the returned song. On failure, keeps the song and says
-   *          what went wrong.
+   * Effects: if a song is shown and nothing is in progress, flies the card off that way, waits
+   *          for any like still being saved, then sends feedback and the time listened to
+   *          SongController (which counts a liked song as LIKE however it is left); then opens
+   *          the offered match if there is one, otherwise displays the returned song. On
+   *          failure, puts the card back and says what went wrong.
+   * @param feedback SKIP or LIKE
+   * @param fromX how far the card was dragged, so its flight continues from there
    */
-  async function leaveSong(feedback: Feedback) {
+  async function leaveSong(feedback: Feedback, fromX = 0) {
     if (song === null || busy) return;
     setBusy(true);
     setActionError(null);
+    setNotice(null);
+    effectId.current += 1;
+    setFlyingCard({ id: effectId.current, song, direction: feedback === 'LIKE' ? 'right' : 'left', fromX });
+    setIsLeaving(true);
+    if (feedback === 'LIKE') playBurst();
     try {
       await likeRequestRef.current?.catch(() => undefined);
       const seconds = Math.min(listenedRef.current, song.durationSeconds);
       const result = await api.songs.submitFeedback(userId, song.id, feedback, seconds);
+      setCanUndo(true);
       if (result.offeredMatch !== null) {
         markMatchShown(result.offeredMatch.matchId);
         navigate(PATHS.match(result.offeredMatch.matchId));
@@ -148,7 +207,37 @@ export function HomeView() {
       }
       displaySong(result.nextSong);
     } catch {
+      setFlyingCard(null);
       setActionError("Couldn't load the next song. Check your connection and try again.");
+    } finally {
+      setIsLeaving(false);
+      setBusy(false);
+    }
+  }
+
+  /**
+   * The undo button.
+   * Requires: none.
+   * Effects: if a swipe can be undone and nothing is in progress, returns to the previous song,
+   *          with its like button as it was. On failure, stays and says what went wrong.
+   */
+  async function undoSwipe() {
+    if (song === null || busy || !canUndo) return;
+    setBusy(true);
+    setActionError(null);
+    setNotice(null);
+    setFlyingCard(null);
+    try {
+      await likeRequestRef.current?.catch(() => undefined);
+      const result = await api.songs.undoLastSwipe(userId);
+      if (result === null) {
+        setCanUndo(false);
+        return;
+      }
+      setCanUndo(result.canUndo);
+      displaySong(result.song, 'back', result.liked);
+    } catch {
+      setActionError("Couldn't go back to the previous song. Try again.");
     } finally {
       setBusy(false);
     }
@@ -158,14 +247,16 @@ export function HomeView() {
    * Stub onLikePressed.
    * Satisfies: R-HOME-10, R-HOME-25.
    * Requires: none.
-   * Effects: if a song is shown and not yet liked, shows the like button as liked at once and
-   *          asks SongController to mark the song liked; playback is not touched. If saving
-   *          fails, the button goes back to not liked and an error says to try again.
+   * Effects: if a song is shown and not yet liked, shows the like button as liked at once with a
+   *          burst of hearts and asks SongController to mark the song liked; playback is not
+   *          touched. If saving fails, the button goes back to not liked and an error says to
+   *          try again.
    */
   function onLikePressed() {
     if (song === null || liked) return;
     setLiked(true);
     setActionError(null);
+    playBurst();
     const request = api.songs.markLiked(userId, song.id);
     likeRequestRef.current = request;
     request.catch(() => {
@@ -201,11 +292,12 @@ export function HomeView() {
 
   function onPointerUp(event: PointerEvent<HTMLDivElement>) {
     if (dragStartRef.current === null) return;
-    const direction = swipeDirection(event.clientX - dragStartRef.current);
+    const dx = event.clientX - dragStartRef.current;
+    const direction = swipeDirection(dx);
     dragStartRef.current = null;
     setDragX(0);
-    if (direction === 'left') void leaveSong('SKIP');
-    if (direction === 'right') void leaveSong('LIKE');
+    if (direction === 'left') void leaveSong('SKIP', dx);
+    if (direction === 'right') void leaveSong('LIKE', dx);
   }
 
   function onPointerCancel() {
@@ -216,6 +308,9 @@ export function HomeView() {
   const duration = playback.durationSeconds > 0 ? playback.durationSeconds : (song?.durationSeconds ?? 0);
   const position = Math.min(playback.positionSeconds, duration);
   const disabled = song === null || busy;
+
+  const frameClasses = ['home__cover-frame', `home__cover-frame--${cardEntrance.kind}`];
+  if (isLeaving) frameClasses.push('home__cover-frame--leaving');
 
   return (
     <main className="home">
@@ -270,7 +365,7 @@ export function HomeView() {
         </button>
 
         <div
-          className="home__card"
+          className={`home__card${dragX !== 0 ? ' home__card--dragging' : ''}`}
           data-testid="song-card"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -278,16 +373,47 @@ export function HomeView() {
           onPointerCancel={onPointerCancel}
           style={dragX !== 0 ? { transform: `translateX(${dragX}px) rotate(${dragX / 25}deg)` } : undefined}
         >
-          {song !== null ? (
+          <div key={`frame-${cardEntrance.id}`} className={frameClasses.join(' ')}>
+            {song !== null ? (
+              <img
+                className="home__cover"
+                src={song.albumCoverUrl}
+                alt={`Album cover of ${song.title} by ${song.artist}`}
+                draggable={false}
+              />
+            ) : (
+              <div className="home__cover home__cover--empty" />
+            )}
+          </div>
+
+          <span className="home__stamp home__stamp--like" aria-hidden="true" style={{ opacity: stampOpacity(dragX, 'right') }}>
+            ♥
+          </span>
+          <span className="home__stamp home__stamp--skip" aria-hidden="true" style={{ opacity: stampOpacity(dragX, 'left') }}>
+            ✕
+          </span>
+
+          {flyingCard !== null && (
             <img
-              className="home__cover"
-              src={song.albumCoverUrl}
-              alt={`Album cover of ${song.title} by ${song.artist}`}
+              key={`flying-${flyingCard.id}`}
+              className={`home__flying-card home__flying-card--${flyingCard.direction}`}
+              src={flyingCard.song.albumCoverUrl}
+              alt=""
+              aria-hidden="true"
               draggable={false}
+              style={
+                {
+                  '--fly-from-x': `${flyingCard.fromX}px`,
+                  '--fly-from-turn': `${flyingCard.fromX / 25}deg`,
+                } as CSSProperties
+              }
+              onAnimationEnd={() => setFlyingCard((current) => (current?.id === flyingCard.id ? null : current))}
             />
-          ) : (
-            <div className="home__cover home__cover--empty" />
           )}
+
+          {bursts.map((id) => (
+            <LikeBurst key={`burst-${id}`} onDone={() => setBursts((current) => current.filter((other) => other !== id))} />
+          ))}
         </div>
 
         <button
@@ -304,7 +430,27 @@ export function HomeView() {
       <div className="home__controls">
         <button
           type="button"
-          className="home__round"
+          className="home__round home__round--undo"
+          aria-label="Go back to previous song"
+          onClick={() => void undoSwipe()}
+          disabled={disabled || !canUndo}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M20.5 17.5C17.6 10 9.6 7.6 5 15" />
+            <path d="M4.5 8.7l.5 6.3 6.3-.6" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="home__round home__round--like"
           aria-label="Like"
           aria-pressed={liked}
           onClick={onLikePressed}
@@ -329,26 +475,18 @@ export function HomeView() {
         </p>
       )}
 
-      <div className="home__progress">
-        <input
-          type="range"
-          className="home__slider"
-          aria-label="Playback position"
-          aria-valuetext={`${formatTime(position)} of ${formatTime(duration)}`}
-          min={0}
-          max={Math.max(duration, 1)}
-          step={1}
-          value={position}
-          onChange={(event) => onSliderMoved(Number(event.target.value))}
-          disabled={song === null}
-        />
-        <p className="home__time">
-          <span>{formatTime(position)}</span>
-          <span>{formatTime(duration)}</span>
-        </p>
-      </div>
+      <SongProgress
+        key={cardEntrance.id}
+        positionSeconds={position}
+        durationSeconds={duration}
+        isPaused={playback.isPaused}
+        disabled={song === null}
+        onSeek={onSliderMoved}
+      />
 
       <div className="home__player" ref={playerHostRef} />
+
+      {devMode && song !== null && <SongStatsPanel song={song} />}
     </main>
   );
 }

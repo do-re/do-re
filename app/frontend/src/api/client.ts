@@ -9,12 +9,16 @@
  * (sendConfirmationEmail, getTasteVector, onAppOpened) are not exposed to the browser.
  */
 import type {
+  ChatHistory,
+  ChatMessage,
+  ChatSummary,
   CreateAccountResult,
   Feedback,
   LoginResponse,
   Match,
   Song,
   SwipeResult,
+  UndoResult,
   UserProfile,
 } from './types';
 
@@ -42,6 +46,16 @@ export interface AccountApi {
    *          PENDING_VERIFICATION (checked in that order)
    */
   createAccount(email: string, password: string, confirmPassword: string): Promise<CreateAccountResult>;
+
+  /**
+   * Handles a click on the link in a confirmation email (the /verify page).
+   * Satisfies: R-SEC-02.
+   * Requires: none.
+   * Effects: if token is the valid, unused token for userId, activates the account and consumes
+   *          the token; otherwise nothing changes.
+   * @returns true iff the account was activated
+   */
+  confirmEmail(userId: string, token: string): Promise<boolean>;
 
   /**
    * Requires: email belongs to an existing account.
@@ -97,6 +111,33 @@ export interface SongApi {
    * @returns the new active song and the offered match, if any
    */
   submitFeedback(userId: string, songId: string, swipe: Feedback, secondsListened: number): Promise<SwipeResult>;
+
+  /**
+   * WEB: tells the undo button whether it can be used.
+   * Requires: userId is logged in.
+   * Effects: none.
+   * @returns true iff undoLastSwipe would go back to a song
+   */
+  canUndo(userId: string): Promise<boolean>;
+
+  /**
+   * WEB: the undo button. Reverses the user's latest swipe, so a song swiped again counts once.
+   * A match already offered by that swipe stays.
+   * Requires: userId is logged in.
+   * Effects: if there is a swipe to undo, its song becomes active again, the listen is removed
+   *          from the history and Taste Vector, the swipe count goes back by one, and the song
+   *          that was active returns to the front of the suggestions. Otherwise nothing changes.
+   * @returns the restored song, or null if there is nothing to undo
+   */
+  undoLastSwipe(userId: string): Promise<UndoResult | null>;
+
+  /**
+   * WEB: for developer mode (stub SongController.getTasteVector).
+   * Requires: userId is logged in.
+   * Effects: none.
+   * @returns the user's 7-number Taste Vector
+   */
+  getTasteVector(userId: string): Promise<readonly number[]>;
 }
 
 /** Client half of MatchController (owner: Gavin, derived). */
@@ -113,7 +154,7 @@ export interface MatchApi {
    * WEB: added so MatchView can load a match from its URL (/match/:matchId) after a refresh.
    * Requires: userId is logged in.
    * Effects: none.
-   * @returns the match with this ID if userId is one of its users, otherwise null
+   * @returns the match with this ID if it is still waiting for userId's answer, otherwise null
    */
   getMatch(matchId: string, userId: string): Promise<Match | null>;
 
@@ -140,9 +181,80 @@ export interface MatchApi {
   declineMatch(match: Match, userId: string): Promise<void>;
 }
 
+/**
+ * Client half of ChatController (owner: Yara, with Felix). Routes are in docs/project/api.md.
+ *
+ * Every method rejects with a ApiError on failure. The user ID arguments mirror the Java
+ * stub and identify the caller to the mock; the HTTP client ignores them because the server
+ * derives the caller from the session token.
+ */
+export interface ChatApi {
+  /**
+   * Satisfies: R-CHAT-01, R-CHAT-02.
+   * Requires: userId is logged in.
+   * Effects: records a heartbeat for userId.
+   * @returns the chats in userId's log, most recent activity first
+   */
+  getChatLog(userId: string): Promise<ChatSummary[]>;
+
+  /**
+   * WEB: one call returns the history and the other user's presence, and is also the heartbeat.
+   * Satisfies: R-CHAT-01, R-CHAT-03, R-CHAT-06.
+   * Requires: userId is logged in; since, if given, is an ISO-8601 time.
+   * Effects: records a heartbeat for userId.
+   * @param chatId the chat
+   * @param userId the caller
+   * @param since if given, only messages strictly after this time are returned
+   * @returns the messages (oldest first), the other user, their presence and the server's time
+   */
+  getHistory(chatId: string, userId: string, since?: string): Promise<ChatHistory>;
+
+  /**
+   * Satisfies: R-CHAT-12, R-CHAT-13.
+   * Requires: senderId is logged in and a participant of chatId.
+   * Effects: stores the trimmed text, time-stamped by the server.
+   * @returns the stored message
+   */
+  sendMessage(chatId: string, senderId: string, text: string): Promise<ChatMessage>;
+
+  /**
+   * Requires: userId is logged in and a participant of chatId.
+   * Effects: the chat leaves userId's log (idempotent); the other user keeps it.
+   */
+  removeChatFromLog(userId: string, chatId: string): Promise<void>;
+
+  /**
+   * Satisfies: R-CHAT-15, R-CHAT-16.
+   * Requires: userId is logged in and a participant of chatId.
+   * Effects: flags the chat and removes it from userId's log (idempotent).
+   */
+  reportChat(userId: string, chatId: string): Promise<void>;
+
+  /**
+   * Supports R-CHAT-06. Not called by any view yet: whether pages other than an open chat send
+   * heartbeats is api.md Q-7 (pending Felix).
+   * Requires: userId is logged in.
+   * Effects: userId's last-seen time becomes now.
+   */
+  recordHeartbeat(userId: string): Promise<void>;
+}
+
+/** What only the demo backend offers, because it can't send real email. */
+export interface DemoTools {
+  /**
+   * Requires: none.
+   * Effects: none.
+   * @returns the in-app path of email's unused verification link, or null if there is none
+   */
+  verificationLinkFor(email: string): string | null;
+}
+
 /** Everything the views can call. Provided to the component tree by ApiProvider. */
 export interface Api {
   readonly account: AccountApi;
   readonly songs: SongApi;
   readonly matches: MatchApi;
+  readonly chats: ChatApi;
+  /** Present only on the mock. */
+  readonly demo?: DemoTools;
 }

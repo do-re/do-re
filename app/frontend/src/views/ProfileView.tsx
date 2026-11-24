@@ -1,7 +1,8 @@
 /**
  * ProfileView: the /profile page (architecture-stubs-v2.java ProfileView). Shows the username
  * and profile picture; a form to change the username; a button that opens a popup to upload a
- * new picture. Also a "Log out" button, since no other page offers one.
+ * new picture. Also a "Log out" button, since no other page offers one, and the developer mode
+ * switch, which shows the user's Taste Vector here and each song's stats on Home.
  *
  * Satisfies: (no numbered requirement; architecture.md ProfileView) R-UI-04 via the bottom bar.
  * Communicates with: AccountController (via useApi().account), ViewController (via the router
@@ -9,11 +10,15 @@
  */
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useApi } from '../api/ApiContext';
+import { displayName } from '../api/profile';
 import type { UserProfile } from '../api/types';
 import { Avatar } from '../components/Avatar';
+import { Credits } from '../components/Credits';
+import { TasteVectorPanel } from '../components/DevPanels';
 import { Modal } from '../components/Modal';
 import { TextField } from '../components/TextField';
 import { useSession } from '../session/SessionContext';
+import { useDevMode } from '../settings/devMode';
 import './auth.css';
 import './profile.css';
 import { validatePicture, validateUsername } from './profileLogic';
@@ -29,6 +34,7 @@ export function ProfileView() {
   const api = useApi();
   const session = useSession();
   const userId = session.userId!;
+  const [devMode, setDevMode] = useDevMode();
 
   const [load, setLoad] = useState<LoadState>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
@@ -166,7 +172,7 @@ export function ProfileView() {
         <>
           <div className="profile__identity">
             <Avatar profile={load.profile} label="you" size="lg" />
-            <p className="profile__name">{load.profile.username}</p>
+            <p className="profile__name">{displayName(load.profile)}</p>
             <button
               ref={changePictureRef}
               type="button"
@@ -176,6 +182,10 @@ export function ProfileView() {
               Change profile picture
             </button>
           </div>
+
+          {load.profile.username.trim() === '' && (
+            <p className="profile__hint">Choose a username so your matches know what to call you.</p>
+          )}
 
           {notice !== null && (
             <p className="profile__notice" role="status">
@@ -203,6 +213,26 @@ export function ProfileView() {
               {savingName ? 'Saving…' : 'Save username'}
             </button>
           </form>
+
+          <div className="dev-toggle">
+            <div>
+              <label htmlFor="developer-mode">Developer mode</label>
+              <p id="developer-mode-hint">Shows each song's stats on Home and your taste vector here.</p>
+            </div>
+            <input
+              id="developer-mode"
+              className="dev-toggle__switch"
+              type="checkbox"
+              role="switch"
+              checked={devMode}
+              onChange={(event) => setDevMode(event.target.checked)}
+              aria-describedby="developer-mode-hint"
+            />
+          </div>
+
+          {devMode && <TasteVectorPanel userId={userId} />}
+
+          <Credits />
 
           <button type="button" className="profile__logout" onClick={session.logOut}>
             Log out

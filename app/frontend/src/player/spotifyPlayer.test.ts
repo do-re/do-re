@@ -173,6 +173,42 @@ describe('createSpotifyPlayer', () => {
     expect(loadApi).toHaveBeenCalledTimes(2);
     expect(fake.created[0].uri).toBe(URI_B);
   });
+
+  it('if the Spotify script fails, shows the play button, and pressing it tries again', async () => {
+    const container = document.createElement('div');
+    const fake = fakeApi();
+    const loadApi = vi.fn().mockRejectedValueOnce(new Error('blocked')).mockResolvedValue(fake.api);
+    const player = createSpotifyPlayer(container, loadApi);
+    const updates: PlaybackState[] = [];
+    player.subscribe((s) => updates.push(s));
+    player.load(URI_A);
+    await flush();
+    expect(updates).toEqual([{ positionSeconds: 0, durationSeconds: 0, isPaused: true }]);
+    player.togglePlay();
+    await flush();
+    expect(loadApi).toHaveBeenCalledTimes(2);
+    expect(fake.created[0].uri).toBe(URI_A);
+  });
+
+  it('pressing play while the embed is still being created does not create a second one', async () => {
+    const { player, loadApi } = setup();
+    player.load(URI_A);
+    player.togglePlay();
+    await flush();
+    expect(loadApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('pressing play after destroy does nothing', async () => {
+    const container = document.createElement('div');
+    const loadApi = vi.fn().mockRejectedValue(new Error('blocked'));
+    const player = createSpotifyPlayer(container, loadApi);
+    player.load(URI_A);
+    await flush();
+    player.destroy();
+    player.togglePlay();
+    await flush();
+    expect(loadApi).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('loadSpotifyIframeApi', () => {

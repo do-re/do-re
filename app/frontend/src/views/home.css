@@ -51,10 +51,225 @@
 }
 
 .home__card {
+  position: relative;
   flex: 0 1 auto;
   touch-action: pan-y; /* horizontal drags are swipes; vertical still scrolls */
   user-select: none;
   cursor: grab;
+  transition: transform 220ms cubic-bezier(0.2, 1.3, 0.4, 1); /* springs back after a short drag */
+}
+
+.home__card--dragging {
+  cursor: grabbing;
+  transition: none;
+}
+
+.home__cover-frame--next {
+  animation: card-arrive 300ms cubic-bezier(0.2, 1.2, 0.4, 1) both;
+}
+
+.home__cover-frame--back {
+  animation: card-return 360ms cubic-bezier(0.2, 1.1, 0.4, 1) both;
+}
+
+/* Hidden while the old card flies off and the next song loads. */
+.home__cover-frame--leaving {
+  opacity: 0;
+  animation: none;
+}
+
+/* The old card, flying away after a swipe. */
+.home__flying-card {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: var(--radius);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.4);
+  pointer-events: none;
+  animation: 340ms cubic-bezier(0.4, 0, 0.8, 0.6) forwards;
+}
+
+.home__flying-card--left {
+  animation-name: fly-left;
+}
+
+.home__flying-card--right {
+  animation-name: fly-right;
+}
+
+/* The badge that fades in while dragging. */
+.home__stamp {
+  position: absolute;
+  top: 12px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border: 3px solid currentColor;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.45);
+  font-size: 1.8rem;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.home__stamp--like {
+  left: 12px;
+  color: #ff6b8b;
+  transform: rotate(-14deg);
+}
+
+.home__stamp--skip {
+  right: 12px;
+  color: #ffffff;
+  transform: rotate(14deg);
+}
+
+/* The burst of hearts and notes on a like. */
+.like-burst {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.like-burst__heart,
+.like-burst__particle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  line-height: 1;
+  transform: translate(-50%, -50%);
+}
+
+.like-burst__heart {
+  color: #ff6b8b;
+  font-size: 7rem;
+  text-shadow: 0 6px 24px rgb(0 0 0 / 0.35);
+  animation: burst-heart 620ms cubic-bezier(0.2, 1.3, 0.5, 1) forwards;
+}
+
+.like-burst__particle {
+  color: #ffd1dc;
+  font-size: 1.5rem;
+  opacity: 0;
+  animation: burst-particle 620ms cubic-bezier(0.1, 0.7, 0.3, 1) forwards;
+}
+
+@keyframes card-arrive {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes card-return {
+  from {
+    opacity: 0;
+    transform: translateX(-70%) rotate(-14deg) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) rotate(0) scale(1);
+  }
+}
+
+@keyframes fly-left {
+  from {
+    opacity: 1;
+    transform: translateX(var(--fly-from-x, 0)) rotate(var(--fly-from-turn, 0deg));
+  }
+  to {
+    opacity: 0;
+    transform: translateX(min(-110vw, -560px)) rotate(-24deg);
+  }
+}
+
+@keyframes fly-right {
+  from {
+    opacity: 1;
+    transform: translateX(var(--fly-from-x, 0)) rotate(var(--fly-from-turn, 0deg));
+  }
+  to {
+    opacity: 0;
+    transform: translateX(max(110vw, 560px)) rotate(24deg);
+  }
+}
+
+@keyframes burst-heart {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.2);
+  }
+  35% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.15);
+  }
+  60% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.25);
+  }
+}
+
+@keyframes burst-particle {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.4);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--burst-x)), calc(-50% + var(--burst-y))) rotate(var(--burst-turn)) scale(1.1);
+  }
+}
+
+@keyframes heart-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.5);
+  }
+  70% {
+    transform: scale(0.9);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home__card,
+  .home__arrow,
+  .home__round {
+    transition: none;
+  }
+
+  .home__cover-frame--next,
+  .home__cover-frame--back,
+  .home__round--like[aria-pressed='true'] span {
+    animation: none;
+  }
+
+  .home__flying-card,
+  .like-burst {
+    display: none;
+  }
 }
 
 .home__cover {
@@ -84,20 +299,43 @@
   height: 44px;
   border-radius: 50%;
   font-size: 1.4rem;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.home__arrow:active:not(:disabled),
+.home__round:active:not(:disabled) {
+  transform: scale(0.88);
 }
 
 .home__controls {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 20px;
 }
 
 .home__round {
+  display: grid;
+  place-items: center;
   width: 52px;
   height: 52px;
+  padding: 0;
   border-radius: 50%;
   font-size: 1.5rem;
   line-height: 1;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.home__round--undo svg {
+  width: 26px;
+  height: 26px;
+}
+
+.home__round--like span {
+  display: inline-block;
+}
+
+.home__round--like[aria-pressed='true'] span {
+  animation: heart-pop 420ms ease;
 }
 
 .home__round--main {
@@ -158,6 +396,15 @@
   display: block;
   border: 0;
   border-radius: var(--radius);
+}
+
+.home__demo-player {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 0.3);
+  font-size: 0.85rem;
+  text-align: center;
 }
 
 .home :focus-visible {

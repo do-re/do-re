@@ -5,6 +5,8 @@
 export const PATHS = {
   login: '/login',
   signup: '/signup',
+  /** The page that the link in a verification email opens. */
+  verify: '/verify',
   home: '/home',
   profile: '/profile',
   match: (matchId: string) => `/match/${encodeURIComponent(matchId)}`,

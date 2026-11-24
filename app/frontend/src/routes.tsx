@@ -1,19 +1,23 @@
 /**
- * URL routes for Gavin's views. One route per view so back/forward and refresh work
- * (CLAUDE.md; architecture.md ViewController).
+ * ViewController (owner: Yara): the app's router. One URL route per ViewType, so back/forward and
+ * refresh work (CLAUDE.md; architecture.md ViewController). Paths are agreed in notes-for-yara Y-1.
  *
- * ViewController and the chat routes (/chats, /chats/:chatId) are Yara's. Agree on these
- * paths with him; until his router exists, this file is the routing table.
+ * Logged-out users are sent to /login, and LoginView and CreateAccountView send logged-in users
+ * home. The bottom bar is on every page except login and signup (OPEN-10, assumed).
+ *
+ * Satisfies: R-ACC-06, R-UI-04, R-CHAT-05.
  */
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
-import { BottomBarPlaceholder } from './components/BottomBarPlaceholder';
+import { BottomBarView } from './components/BottomBarView';
 import { useSession } from './session/SessionContext';
-import { ChatPlaceholder } from './views/ChatPlaceholder';
+import { ChatView } from './views/ChatView';
 import { CreateAccountView } from './views/CreateAccountView';
 import { HomeView } from './views/HomeView';
 import { LoginView } from './views/LoginView';
 import { MatchView } from './views/MatchView';
+import { MessageLogView } from './views/MessageLogView';
 import { ProfileView } from './views/ProfileView';
+import { VerifyEmailView } from './views/VerifyEmailView';
 import { PATHS } from './paths';
 
 /**
@@ -37,7 +41,7 @@ function WithBottomBar() {
       <div className="app-shell__content">
         <Outlet />
       </div>
-      <BottomBarPlaceholder />
+      <BottomBarView />
     </div>
   );
 }
@@ -51,14 +55,14 @@ export function AppRoutes() {
     <Routes>
       <Route path={PATHS.login} element={<LoginView />} />
       <Route path={PATHS.signup} element={<CreateAccountView />} />
+      <Route path={PATHS.verify} element={<VerifyEmailView />} />
       <Route element={<RequireSession />}>
         <Route element={<WithBottomBar />}>
           <Route path={PATHS.home} element={<HomeView />} />
           <Route path={PATHS.profile} element={<ProfileView />} />
           <Route path="/match/:matchId" element={<MatchView />} />
-          {/* Placeholders until Yara's MessageLogView and ChatView exist. */}
-          <Route path={PATHS.chats} element={<ChatPlaceholder />} />
-          <Route path="/chats/:chatId" element={<ChatPlaceholder />} />
+          <Route path={PATHS.chats} element={<MessageLogView />} />
+          <Route path="/chats/:chatId" element={<ChatView />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to={PATHS.home} replace />} />

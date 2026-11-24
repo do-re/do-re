@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useApi } from '../api/ApiContext';
+import { displayName } from '../api/profile';
 import { Avatar } from '../components/Avatar';
 import type { Match, UserProfile } from '../api/types';
 import { PATHS } from '../paths';
@@ -97,7 +98,7 @@ function MatchPage({ matchId }: { matchId: string }) {
           navigate(PATHS.home, {
             replace: true,
             state: {
-              notice: `You said yes to ${load.other.username}! Your chat will appear in Messages once they say yes too.`,
+              notice: `You said yes to ${displayName(load.other)}! Your chat will appear in Messages once they say yes too.`,
             },
           });
         }
@@ -142,14 +143,14 @@ function MatchPage({ matchId }: { matchId: string }) {
 
       {load.kind === 'ready' && (
         <>
-          <h2 className="match__title">You matched with {load.other.username}!</h2>
+          <h2 className="match__title">You matched with {displayName(load.other)}!</h2>
 
           <div className="match__pair">
             <Person profile={load.self} label="You" />
             <span className="match__note" aria-hidden="true">
               ♫
             </span>
-            <Person profile={load.other} label={load.other.username} />
+            <Person profile={load.other} label={displayName(load.other)} />
           </div>
 
           <p className="match__percent">{formatPercent(load.match.compatibilityPercent)} match!</p>

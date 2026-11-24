@@ -134,6 +134,7 @@ export function CreateAccountView() {
 
   const closePopup = () => setPopup(null);
   const toLogin = (withEmail: string) => navigate(PATHS.login, { state: { email: withEmail } });
+  const demoLink = popup?.kind === 'VERIFY' ? (api.demo?.verificationLinkFor(popup.email) ?? null) : null;
 
   return (
     <main className="page auth-page">
@@ -208,6 +209,11 @@ export function CreateAccountView() {
           <button type="button" className="button-primary" onClick={() => toLogin(popup.email)}>
             Back to login
           </button>
+          {demoLink !== null && (
+            <p className="auth-page__demo">
+              Demo mode can't send real email. <Link to={demoLink}>Open your verification link</Link>
+            </p>
+          )}
         </Modal>
       )}
 

@@ -68,10 +68,10 @@ Each component has one owner (team plan). Edit freely in the component you were 
 - **Data:** song library = Chosic playlist CSV export, loaded at backend start.
 
 Fill these in once the build is set up:
-- Build: `TBD`
-- Run server: `TBD`
-- Run client: `TBD`
-- Tests + coverage: `TBD` (must be one command; course C-REL-3). Backend: JaCoCo complexity ≥ 90%, branch ≥ 85%, method 100%.
+- Build: frontend `npm run build` in `frontend/`; backend `TBD`
+- Run server: `TBD` (the frontend runs on its in-memory demo until `VITE_API_BASE_URL` is set)
+- Run client: `npm run dev` in `frontend/`
+- Tests + coverage: frontend `npm run coverage` in `frontend/`; backend `TBD` (must be one command; course C-REL-3). Backend: JaCoCo complexity ≥ 90%, branch ≥ 85%, method 100%.
 
 ## Timeline (team plan + course)
 

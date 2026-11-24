@@ -1,60 +1,48 @@
 /**
- * Who is logged in, on the client. Kept in sessionStorage so a refresh keeps the user logged in
- * (CLAUDE.md: refresh must work).
- *
- * TEMPORARY: the real session (a token from Felix's auth, checked by the server) belongs to
- * ViewController (Yara) and the backend. Only the userId is stored here, never a password or
- * email. Replace or merge with Yara's version when ViewController lands.
+ * Who is logged in, on the client (part of ViewController, notes-for-yara Y-3). The session is
+ * kept in sessionStorage so a refresh keeps the user logged in (CLAUDE.md: refresh must work),
+ * and ends when the user logs out or the server rejects its token.
  */
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
-
-const STORAGE_KEY = 'do-re.userId';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { clearStoredSession, readStoredUserId, SESSION_EXPIRED_EVENT, storeSession } from './sessionStore';
 
 export interface Session {
   /** The logged-in user's ID, or null when logged out. */
   readonly userId: string | null;
-  /** Effects: userId becomes the given ID and is remembered for this browser tab. */
-  logIn(userId: string): void;
-  /** Effects: userId becomes null and is forgotten. */
+  /**
+   * Effects: userId becomes the given ID and is remembered for this browser tab, with the session
+   *          token if one is given.
+   */
+  logIn(userId: string, token?: string): void;
+  /** Effects: userId becomes null, and the ID and token are forgotten. */
   logOut(): void;
 }
 
 const SessionContext = createContext<Session | null>(null);
 
-function readStored(): string | null {
-  try {
-    return sessionStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function writeStored(userId: string | null): void {
-  try {
-    if (userId === null) sessionStorage.removeItem(STORAGE_KEY);
-    else sessionStorage.setItem(STORAGE_KEY, userId);
-  } catch {
-    // Storage blocked (private mode etc.): the session still works until the tab reloads.
-  }
-}
-
 /**
  * Requires: none.
- * Effects: provides a Session to children, starting from initialUserId if given, otherwise
- *          from sessionStorage.
+ * Effects: provides a Session to children, starting from initialUserId if given, otherwise from
+ *          sessionStorage; logs out when the server reports the session has expired.
  */
 export function SessionProvider({ children, initialUserId }: { children: ReactNode; initialUserId?: string | null }) {
   const [userId, setUserId] = useState<string | null>(() =>
-    initialUserId !== undefined ? initialUserId : readStored(),
+    initialUserId !== undefined ? initialUserId : readStoredUserId(),
   );
-  const logIn = useCallback((id: string) => {
-    writeStored(id);
+  const logIn = useCallback((id: string, token?: string) => {
+    storeSession(id, token);
     setUserId(id);
   }, []);
   const logOut = useCallback(() => {
-    writeStored(null);
+    clearStoredSession();
     setUserId(null);
   }, []);
+
+  useEffect(() => {
+    window.addEventListener(SESSION_EXPIRED_EVENT, logOut);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, logOut);
+  }, [logOut]);
+
   const session = useMemo(() => ({ userId, logIn, logOut }), [userId, logIn, logOut]);
   return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
 }

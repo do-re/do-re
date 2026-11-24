@@ -4,6 +4,7 @@
  */
 import type { Api } from './api/client';
 import { ApiProvider } from './api/ApiContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { PlayerProvider } from './player/PlayerContext';
 import { createSpotifyPlayer } from './player/spotifyPlayer';
 import type { PlayerFactory } from './player/types';
@@ -23,7 +24,9 @@ export function App({ api, initialUserId, createPlayer = createSpotifyPlayer }: 
     <ApiProvider api={api}>
       <PlayerProvider factory={createPlayer}>
         <SessionProvider initialUserId={initialUserId}>
-          <AppRoutes />
+          <ErrorBoundary>
+            <AppRoutes />
+          </ErrorBoundary>
         </SessionProvider>
       </PlayerProvider>
     </ApiProvider>

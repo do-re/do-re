@@ -80,6 +80,7 @@ button:disabled {
 .app-shell {
   min-height: 100dvh;
   padding-bottom: var(--bar-height);
+  overflow-x: clip; /* a swiped card can fly past the edge without adding a scrollbar */
 }
 
 .bottom-bar {

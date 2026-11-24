@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { MockBackend } from '../api/mock';
 import { SEED_SONGS } from '../api/mockSeed';
 import { renderApp } from '../test/renderApp';
-import { sequence } from '../test/sequence';
 import { formatPercent } from './matchLogic';
 
 /** Opens the seeded match (demo ↔ harmony, 87.4%, harmony already said yes). */
@@ -14,13 +13,15 @@ async function openSeededMatch() {
   return rendered;
 }
 
-/** Opens Home with a match on every swipe (first melody, then rhythm), skips once, waits for it. */
+/** Opens Home with a match on every swipe, skips once, and waits for the best match to appear. */
 async function openFreshMatch() {
-  const rendered = renderApp({ path: '/home', userId: 'u-demo', mock: { matchEvery: 1, random: sequence(0, 0, 0.9, 0) } });
+  const rendered = renderApp({ path: '/home', userId: 'u-demo', mock: { matchEvery: 1 } });
   await screen.findByRole('heading', { name: SEED_SONGS[0].title });
   await userEvent.click(screen.getByRole('button', { name: 'Skip song' }));
-  await screen.findByRole('heading', { name: 'You matched with melody!' });
-  return rendered;
+  await screen.findByRole('heading', { name: /^You matched with / });
+  const [match] = await rendered.api.matches.getPendingMatches('u-demo');
+  const other = await rendered.api.matches.getOtherProfile(match, 'u-demo');
+  return { ...rendered, match, otherName: other.username };
 }
 
 const skipMatch = () => screen.getByRole('button', { name: /skip$/i });
@@ -92,28 +93,36 @@ describe('MatchView answers', () => {
     expect(await screen.findByRole('heading', { name: 'Chat' })).toBeInTheDocument();
     const chatId = await confirm.mock.results[0].value;
     expect(chatId).not.toBeNull();
-    expect(screen.getByText(`Chat ${chatId} will open here.`)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'harmony' })).toBeInTheDocument();
   });
 
   it('R_HOME_23 confirming first goes home and says the chat will appear once they say yes (OPEN-4)', async () => {
-    const { api } = await openFreshMatch();
+    const { api, match, otherName } = await openFreshMatch();
     await userEvent.click(playMatch());
     expect(await screen.findByRole('heading', { name: SEED_SONGS[1].title })).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent(
-      'You said yes to melody! Your chat will appear in Messages once they say yes too.',
+      `You said yes to ${otherName}! Your chat will appear in Messages once they say yes too.`,
     );
     expect(await api.matches.getPendingMatches('u-demo')).toEqual([]);
-    expect(await api.matches.getPendingMatches('u-melody')).toHaveLength(1);
+    expect(await api.matches.getPendingMatches(match.userB)).toHaveLength(1);
+  });
+
+  it('an answered match is no longer available from its URL', async () => {
+    const { api, match } = await openFreshMatch();
+    await userEvent.click(skipMatch());
+    await screen.findByRole('heading', { name: SEED_SONGS[1].title });
+    expect(await api.matches.getMatch(match.matchId, 'u-demo')).toBeNull();
   });
 
   it('R_HOME_21 R_HOME_22 declining goes home, and swiping goes on to offer new matches', async () => {
-    const { api } = await openFreshMatch();
+    const { api, match, otherName } = await openFreshMatch();
     await userEvent.click(skipMatch());
     expect(await screen.findByRole('heading', { name: SEED_SONGS[1].title })).toBeInTheDocument();
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
-    expect(await api.matches.getPendingMatches('u-melody')).toEqual([]);
+    expect(await api.matches.getPendingMatches(match.userB)).toEqual([]);
     await userEvent.click(screen.getByRole('button', { name: 'Skip song' }));
-    expect(await screen.findByRole('heading', { name: 'You matched with rhythm!' })).toBeInTheDocument();
+    const next = await screen.findByRole('heading', { name: /^You matched with / });
+    expect(next).not.toHaveTextContent(otherName);
   });
 
   it('disables both buttons while the answer is being saved, so it is sent once', async () => {

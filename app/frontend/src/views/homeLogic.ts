@@ -54,6 +54,51 @@ export function swipeDirection(dx: number): 'left' | 'right' | null {
 }
 
 /**
+ * How the "like" or "skip" badge fades in while dragging the card.
+ * Requires: none.
+ * Effects: none.
+ * @returns the badge's opacity in [0, 1]: 0 when dragging the other way, 1 at the swipe threshold
+ */
+export function stampOpacity(dx: number, side: 'left' | 'right'): number {
+  const toward = side === 'right' ? dx : -dx;
+  return Math.min(1, Math.max(0, toward / SWIPE_THRESHOLD_PX));
+}
+
+/** The last playback position the player reported, and when, so the bar can move between reports. */
+export interface PlaybackAnchor {
+  readonly positionSeconds: number;
+  /** When it was reported, in performance.now() milliseconds. */
+  readonly at: number;
+  readonly isMoving: boolean;
+}
+
+/**
+ * Where the progress bar should be right now.
+ * Requires: durationSeconds >= 0; now >= anchor.at.
+ * Effects: none.
+ * @returns the anchor's position plus the time since it if playing, at most durationSeconds
+ */
+export function projectPosition(anchor: PlaybackAnchor, now: number, durationSeconds: number): number {
+  const elapsed = anchor.isMoving ? (now - anchor.at) / 1000 : 0;
+  return Math.min(durationSeconds, anchor.positionSeconds + elapsed);
+}
+
+/** Below this gap, a report behind the bar is timing noise rather than a real jump back. */
+export const MAX_BACKWARD_DRIFT_S = 0.6;
+
+/**
+ * Chooses the position to continue from when the player reports a new one, so the bar never
+ * twitches backwards because a report arrived slightly late.
+ * Requires: shown >= 0; reported >= 0.
+ * Effects: none.
+ * @returns shown if playing and reported is behind it by at most MAX_BACKWARD_DRIFT_S; else reported
+ */
+export function nextAnchorPosition(shown: number, reported: number, isPaused: boolean): number {
+  const behind = shown - reported;
+  return !isPaused && behind > 0 && behind <= MAX_BACKWARD_DRIFT_S ? shown : reported;
+}
+
+/**
  * The full-page background colour for a song (R-HOME-09), taken from its Audio Features so it
  * needs no image processing: happiness (valence) sets the hue, from blue (sad) to orange
  * (happy); energy sets the saturation. Lightness stays at 25% so white text keeps a contrast
@@ -70,6 +115,17 @@ export function backgroundFor(features: readonly number[]): string {
   const hue = Math.round(220 - valence * 190);
   const saturation = Math.round(35 + energy * 40);
   return `hsl(${hue} ${saturation}% 25%)`;
+}
+
+/**
+ * Reads the one-line message another page passed in router state (e.g. MatchView, OPEN-4).
+ * Requires: none (state can be anything after a refresh).
+ * Effects: none.
+ * @returns the notice if state carries a string one, otherwise null
+ */
+export function readNotice(state: unknown): string | null {
+  if (typeof state !== 'object' || state === null || !('notice' in state)) return null;
+  return typeof state.notice === 'string' ? state.notice : null;
 }
 
 const SHOWN_MATCHES_KEY = 'do-re.shownMatches';

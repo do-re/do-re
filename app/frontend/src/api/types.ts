@@ -8,6 +8,17 @@
 /** Number of Audio Features per song and entries in a Taste Vector (R-HOME-11, R-HOME-17). */
 export const FEATURE_COUNT = 7;
 
+/** What each Audio Feature index means, using Chosic's names ("Happiness" is valence). */
+export const FEATURE_NAMES = [
+  'Happiness',
+  'Danceability',
+  'Energy',
+  'Acousticness',
+  'Instrumentalness',
+  'Liveness',
+  'Speechiness',
+] as const;
+
 /**
  * A song in the library. Mirrors the Java `Song` record.
  * Rep invariant: durationSeconds > 0; spotifyUri starts with "spotify:track:";
@@ -57,16 +68,25 @@ export interface SwipeResult {
   readonly offeredMatch: Match | null;
 }
 
+/** WEB: what the undo button gets back: the previous song, restored as the active one. */
+export interface UndoResult {
+  readonly song: Song;
+  /** Whether the like button was on for this song when the user left it. */
+  readonly liked: boolean;
+  /** Whether there is another song to go back to. */
+  readonly canUndo: boolean;
+}
+
 /** Mirrors the Java `LoginResult` enum. */
 export type LoginResult = 'SUCCESS' | 'WRONG_PASSWORD' | 'NO_ACCOUNT' | 'NOT_VERIFIED';
 
 /**
  * WEB: the stub's `login` returns only a LoginResult and the view then calls `getUserId`.
- * Over HTTP one round trip is better, so a successful login also carries the user ID
- * (and later, a session token from Felix's auth design).
+ * Over HTTP one round trip is better, so a successful login also carries the user ID and the
+ * session token that authenticates later requests (api.md Q-1).
  */
 export type LoginResponse =
-  | { readonly result: 'SUCCESS'; readonly userId: string }
+  | { readonly result: 'SUCCESS'; readonly userId: string; readonly token: string }
   | { readonly result: Exclude<LoginResult, 'SUCCESS'> };
 
 /** Mirrors the Java `CreateAccountResult` enum. */
@@ -75,3 +95,39 @@ export type CreateAccountResult =
   | 'EMAIL_IN_USE'
   | 'INVALID_EMAIL'
   | 'PASSWORDS_DO_NOT_MATCH';
+
+/** Longest message the client will send (proposal, api.md Q-5). */
+export const MAX_MESSAGE_LENGTH = 2000;
+
+/**
+ * One chat message. Mirrors the Java `ChatMessage` record.
+ * WEB: adds `messageId` so polling can de-duplicate (api.md Q-3, pending Felix); `timestamp` is
+ * an ISO-8601 UTC string set by the server.
+ * Rep invariant: text is non-empty.
+ */
+export interface ChatMessage {
+  readonly messageId: string;
+  readonly senderId: string;
+  readonly text: string;
+  readonly timestamp: string;
+}
+
+/** One row of the caller's message log (api.md `GET /chats`). */
+export interface ChatSummary {
+  readonly chatId: string;
+  readonly otherUser: UserProfile;
+  /** Null if the chat has no messages yet. */
+  readonly lastMessage: ChatMessage | null;
+  /** The last message's time, or the chat's creation time if it has none. */
+  readonly lastActivityAt: string;
+}
+
+/** A chat's messages plus presence (api.md `GET /chats/{chatId}/messages`). */
+export interface ChatHistory {
+  readonly chatId: string;
+  readonly otherUser: UserProfile;
+  readonly otherUserOnline: boolean;
+  /** Oldest first. */
+  readonly messages: readonly ChatMessage[];
+  readonly serverTime: string;
+}

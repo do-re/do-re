@@ -132,9 +132,10 @@ export function createSpotifyPlayer(
         });
       },
       () => {
-        // Script failed to load: allow the next load() to try again.
+        // Script failed to load: show the play button, and let it or the next load() try again.
         creating = false;
         host.remove();
+        emit({ isPaused: true, duration: 0, position: 0 });
       },
     );
   }
@@ -151,7 +152,8 @@ export function createSpotifyPlayer(
       if (!creating) create(uri);
     },
     togglePlay() {
-      controller?.togglePlay();
+      if (controller !== null) controller.togglePlay();
+      else if (!creating && !destroyed && wantedUri !== null) create(wantedUri);
     },
     seek(seconds) {
       controller?.seek(seconds);

@@ -132,3 +132,32 @@
 .modal__actions button {
   width: 100%;
 }
+
+/* A link styled as the main button. */
+.button-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.auth-page__message {
+  margin: 0 0 8px;
+  text-align: center;
+}
+
+.auth-page__message p {
+  margin: 0 0 12px;
+}
+
+.auth-page__demo {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.auth-page__demo a {
+  color: var(--accent);
+  font-weight: 600;
+}

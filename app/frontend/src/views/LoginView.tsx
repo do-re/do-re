@@ -79,7 +79,7 @@ export function LoginView() {
       const response = await api.account.login(trimmed, password);
       if (response.result === 'SUCCESS') {
         // The re-render sees the session and redirects (the <Navigate> above).
-        session.logIn(response.userId);
+        session.logIn(response.userId, response.token);
         return;
       }
       showError(response.result, trimmed);

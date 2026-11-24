@@ -2,6 +2,7 @@
  * A round profile picture. Without a picture it shows the username's first letter.
  * Used by MatchView and ProfileView.
  */
+import { displayName } from '../api/profile';
 import type { UserProfile } from '../api/types';
 
 export interface AvatarProps {
@@ -24,7 +25,7 @@ export function Avatar({ profile, label, size = 'md' }: AvatarProps) {
   }
   return (
     <div className={`${className} avatar--empty`} role="img" aria-label={`No profile picture for ${label}`}>
-      {profile.username.charAt(0).toUpperCase()}
+      {displayName(profile).charAt(0).toUpperCase()}
     </div>
   );
 }

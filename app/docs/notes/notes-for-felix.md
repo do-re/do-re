@@ -71,6 +71,21 @@ The frontend's method list is in `frontend/src/api/client.ts`. One HTTP endpoint
 - **Catch:** listeners not logged in to Spotify hear a ~30 s preview (OPEN-6). A user who hears the whole preview of a 4-minute song sends `secondsListened = 30`, which looks like 12% of the song.
 - **Question for MusicTasteModel's weight coefficient:** should listen time be compared with the song's full length, or with the length actually available? If the latter, the client could also send the preview's length (the player reports it) as a new parameter to `submitFeedback`.
 
+### F-12 · Suggestions and weights in the demo — `ASK` (2026-11-23, from Yara)
+- **Cold start:** a new user's taste is the centre of feature space, so "near taste" means nothing. The demo spreads their first 5 songs across the library, then plays the cached song nearest their taste (`frontend/src/api/mockSuggestions.ts`).
+- **Weights:** a like is `0.2 × (0.5 + 0.5 × fraction)`, a skip is `-0.05 × (1 - fraction)` (`mockTaste.ts`). Both meet the `computeWeight` spec.
+- **Question:** keep these in MusicTasteModel and SongSuggestionModel, or do you want something else?
+
+### F-13 · Frontend is ready to connect — `TO TELL` (2026-11-23, from Yara)
+- All routes are in `docs/project/api.md`, and the steps are in `docs/project/frontend-handoff.md`.
+- Setting `VITE_API_BASE_URL` switches the app from the demo to your API.
+- CloudFront must return `/index.html` for 403 and 404, or refreshing any page breaks.
+
+### F-14 · Three new song routes — `ASK` (2026-11-23, from Yara)
+- **Undo:** `GET /songs/undo` and `POST /songs/undo` go back to the previous song and reverse that swipe's effect. The server has to keep each user's last 10 swipes, including the Taste Vector before each one (api.md Q-14).
+- **Developer mode:** `GET /songs/taste` returns the user's own Taste Vector, for a switch on the Profile page.
+- **Question:** are you OK adding these? Both are public spec additions to SongController.
+
 ---
 
 ## Resolved
