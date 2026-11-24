@@ -1,0 +1,55 @@
+/* ProfileView. Mobile-first; form styles come from auth.css, avatar from index.css. */
+
+.profile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.profile__title {
+  margin: 0;
+  text-align: center;
+  font-size: 1.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.profile__identity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile__name {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.profile__notice {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.profile__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.profile__logout {
+  align-self: center;
+  min-height: 44px;
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  color: var(--danger);
+  font-weight: 600;
+  text-decoration: underline;
+}

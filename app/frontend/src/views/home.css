@@ -1,0 +1,174 @@
+/* HomeView. Mobile-first: one column that fits a 375px phone; wider screens only centre it. */
+
+.home {
+  position: relative;
+  /* Own stacking context, so the z-index: -1 background sits above the body's background
+     but below this page's content. */
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  color: #ffffff;
+}
+
+/* Full-page coloured background behind everything (R-HOME-09). */
+.home__background {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: hsl(220 35% 25%);
+  transition: background 400ms ease;
+}
+
+.home__header {
+  width: 100%;
+  min-height: 3.5rem;
+  text-align: center;
+}
+
+.home__title {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.25;
+}
+
+.home__artist {
+  margin: 2px 0 0;
+  opacity: 0.85;
+}
+
+.home__stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.home__card {
+  flex: 0 1 auto;
+  touch-action: pan-y; /* horizontal drags are swipes; vertical still scrolls */
+  user-select: none;
+  cursor: grab;
+}
+
+.home__cover {
+  display: block;
+  width: min(62vw, 300px);
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.35);
+}
+
+.home__cover--empty {
+  background: rgb(255 255 255 / 0.12);
+}
+
+.home__arrow,
+.home__round,
+.home__pill {
+  border: none;
+  color: #ffffff;
+  background: rgb(255 255 255 / 0.16);
+}
+
+.home__arrow {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 1.4rem;
+}
+
+.home__controls {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.home__round {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.home__round--main {
+  width: 64px;
+  height: 64px;
+  background: #ffffff;
+  color: #1a1a1a;
+  font-size: 1.3rem;
+}
+
+.home__round[aria-pressed='true'] {
+  color: #ff6b8b;
+}
+
+.home__progress {
+  width: 100%;
+}
+
+.home__slider {
+  width: 100%;
+  accent-color: #ffffff;
+}
+
+.home__time {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.home__problem {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 0.35);
+  text-align: center;
+}
+
+.home__problem p {
+  margin: 0 0 8px;
+}
+
+.home__pill {
+  min-height: 44px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.home__player {
+  width: 100%;
+  min-height: 80px;
+}
+
+.home__player iframe {
+  display: block;
+  border: 0;
+  border-radius: var(--radius);
+}
+
+.home :focus-visible {
+  outline-color: #ffffff;
+}
+
+.home__notice {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: rgb(255 255 255 / 0.16);
+  text-align: center;
+}
