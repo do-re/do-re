@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "do-re"
+region = "us-west-2"
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = true
+# Parameters are not stored here. Pass them on the command line, e.g.
+#   sam deploy --parameter-overrides EmailFrom=<sender> AppBaseUrl=<AppUrl output> AlertEmail=<you>

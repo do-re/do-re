@@ -1,6 +1,6 @@
-# API contract — DRAFT
+# API contract
 
-> **Status: DRAFT, pending Felix's confirmation.** Drafted 2026-11-23 by Yara (with Claude) from `architecture-stubs-v2.java` and `architecture.md`. **The frontend is built against every route below** (`frontend/src/api/httpApi.ts`, `chatHttp.ts`), but no server exists yet, so none of it has been run against a real backend. Items marked **Q-n** need a decision from Felix (backend/AWS owner). If a route changes, update this file and the matching client function. See `frontend-handoff.md` for the connection checklist.
+> **Status (2026-11-24): implemented by the backend on branch `felix-backend`, not yet deployed.** Drafted 2026-11-23 by Yara (with Claude) from `architecture-stubs-v2.java` and `architecture.md`; the frontend is built against every route below (`frontend/src/api/httpApi.ts`, `chatHttp.ts`). The backend (`backend/src/http/api.ts`) serves every route, and `backend/test/contract.test.ts` runs the frontend's HTTP client against it in-process. Nothing has run on AWS yet. The questions **Q-1 to Q-14** are answered in [Backend answers](#backend-answers-2026-11-24) at the end; each answer is what the code does today and is Felix's to confirm or change. If a route changes, update this file, the client function and the backend route together.
 
 Owners: account and match routes Gavin, chat routes Yara, song routes Gavin + Yara. Backend integration: Felix.
 
@@ -197,3 +197,33 @@ Every non-2xx response has this body:
 ## Open questions for Felix (summary)
 
 Q-1 auth token · Q-2 picture URLs · Q-3 `messageId` · Q-4 `since` filter · Q-5 max length · Q-6 report reason · Q-7 app-wide heartbeat · Q-8 match-keyed `createChat` · Q-9 404 after remove/report · Q-10 one base URL · Q-11 picture upload · Q-12 verification-status privacy · Q-13 who calls `onAppOpened` · Q-14 storing undo history.
+
+## Backend answers (2026-11-24)
+
+What the backend on `felix-backend` does for each open question. Written by Claude for Felix; he has not reviewed them individually.
+
+| Q | Answer |
+|---|---|
+| Q-1 token | An opaque random token (256 bits), returned by login and valid for 7 days. The server stores only its SHA-256 hash in DynamoDB (`SessionModel`), so every Lambda validates it with one read and there is no shared secret. Extra route: `POST /auth/logout` (token, no body, `204`) ends the session on the server; the frontend does not call it yet. |
+| Q-2 picture URLs | As proposed. Pictures are stored in S3 and served by CloudFront; `profilePictureUrl` is `<app origin>/pictures/<unguessable name>`, or `null`. A new upload gets a new URL. |
+| Q-3 `messageId` | Added. It is the message's position in its chat as a string (`"1"`, `"2"`, …), unique within a chat. |
+| Q-4 `since` | Added in ChatModel (`getChat(chatId, { since })`), so a poll reads only newer messages. `since` is exclusive; a value that is not a timestamp → `400 BAD_REQUEST`. |
+| Q-5 max length | 2000 characters after trimming → `400 MESSAGE_TOO_LONG`. |
+| Q-6 report reason | Left out. Any body is ignored. |
+| Q-7 heartbeat | `POST /presence/heartbeat` exists, and every authenticated `/chats…` route also counts as one. Heartbeats less than 10 s after the stored one are not written (saves DynamoDB writes; the online window is still 30 s). No page calls the app-wide heartbeat yet, so today a user is online only while on a chat screen. |
+| Q-8 one chat per match | `createChat(userA, userB)` keeps its signature. The chat ID is derived from the two user IDs and created with a conditional write, so a pair can only ever have one chat and a retry returns the same ID. |
+| Q-9 after remove/report | As proposed: for the user who removed or reported it, routes 2 and 3 return `404 CHAT_NOT_FOUND`. Remove and report themselves stay idempotent (`204`). The other user is unaffected. |
+| Q-10 base URL | One base URL: `<app origin>/api` (CloudFront forwards `/api/*` to the API), so the deployed app is same-origin and needs no CORS. For local development the API's own URL allows `http://localhost:5173`. Both are stack outputs (`ApiBaseUrl`, `DevApiBaseUrl`). |
+| Q-11 picture upload | Raw body as drafted. Limit **4 MB** (Lambda's request limit is 6 MB after base64) → `413 PICTURE_TOO_LARGE`. Accepted types: PNG, JPEG, GIF, WebP, detected from the file's contents, not the `Content-Type` header; anything else → `400 BAD_REQUEST`. **The client's 5 MB check (`MAX_PICTURE_BYTES` in `profileLogic.ts`) should become 4 MB.** |
+| Q-12 verification-status | Implemented as drafted. An unknown email answers `{ "verified": false }` rather than an error. It still reveals verified accounts (OPEN-16). |
+| Q-13 `onAppOpened` | Not needed by the browser: `GET /songs/current` fills the cache when it is empty. |
+| Q-14 undo | Implemented: the server keeps each user's last 10 swipes with the Taste Vector before each. `GET /songs/taste` is served to the logged-in user for their own vector only. |
+
+Other things the client should know:
+
+- **Extra error codes.** `404 USER_NOT_FOUND` (`GET /users/{userId}`), `404 NOT_FOUND` (no such route), `502 EMAIL_SEND_FAILED` (the account was created but the email could not be sent; logging in re-sends it), `503 BUSY` (too much contention; retry). The client currently shows these as `INTERNAL` with the server's message, which is acceptable.
+- **`GET /users/me`** returns the caller's own profile.
+- **Login by an unverified user re-sends the confirmation email**, at most once a minute. Confirmation links expire after 24 hours.
+- **Tuning taken from the demo** (frontend-handoff.md "Decisions to confirm"): skip weight `-0.05 × (1 - fraction)`, first songs spread across the library, then the cached song nearest the taste, a match offer every 5 to 9 swipes, compatibility `100 × (1 - distance / √7)`, `getMatch` only while awaiting the caller.
+- **CloudFront serves `/index.html` for app routes** through a CloudFront Function instead of custom error responses, because error responses would also replace the API's own 403 and 404 bodies.
+

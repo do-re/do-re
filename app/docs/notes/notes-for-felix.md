@@ -91,3 +91,24 @@ The frontend's method list is in `frontend/src/api/client.ts`. One HTTP endpoint
 ## Resolved
 
 _(none yet)_
+
+## Backend status (2026-11-24, branch `felix-backend`)
+
+What the backend does today for each open item above. Written by Claude while building the backend for Felix; **Felix has not confirmed these one by one**, so the items stay in Open until he does. Full API answers are in `docs/project/api.md` → "Backend answers".
+
+| Item | Backend today |
+|---|---|
+| F-1 | Login returns `{ result: 'SUCCESS', userId, token }`. The token is an opaque session token, sent as `Authorization: Bearer`, valid 7 days (api.md Q-1). |
+| F-2 | `profilePictureUrl` as proposed: pictures in S3, served by CloudFront. |
+| F-3 | Raw body upload. Limit 4 MB, types PNG/JPEG/GIF/WebP checked from the file contents. **`MAX_PICTURE_BYTES` in `profileLogic.ts` should be 4 MB.** |
+| F-4 | `getMatch` implemented (`MatchController.getMatch`, `MatchModel.getPendingMatch`): returns the match only while it awaits the caller. Gavin owns MatchModel; Claude implemented it and MatchController on this branch. |
+| F-5 | `verification-status` implemented as the frontend calls it. The enumeration concern is recorded as OPEN-16, not solved. |
+| F-6 | Answered in api.md: one base URL (`<app origin>/api`), error format as drafted, CORS for `localhost:5173` on the API's direct URL. |
+| F-7 | Nobody needs to trigger `onAppOpened`: `GET /songs/current` fills the cache when empty. |
+| F-8 | **Still needed from Felix:** the Chosic CSV export at `backend/data/songs.csv`. The backend cannot be deployed without it, and the mock still has placeholder tracks. |
+| F-9 | Same regex and the same check order on the server. |
+| F-10 | Unchanged: a password only has to be non-empty. **Felix to decide** whether to require 8 characters. |
+| F-11 | Listen time is compared with the song's full length, so a full 30 s preview of a 4-minute song counts as 12%. **Felix to decide** whether the client should send the preview length. |
+| F-12 | Adopted the demo's rules: spread first 5 songs, then nearest in cache, skip weight `-0.05 × (1 - fraction)`. |
+| F-13 | Connected in tests only: `backend/test/contract.test.ts` runs `httpApi.ts` against the backend in-process. Not deployed yet. CloudFront serves `index.html` for app routes through a CloudFront Function rather than error responses. |
+| F-14 | Both added: undo (last 10 swipes) and `GET /songs/taste`. |

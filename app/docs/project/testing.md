@@ -15,14 +15,14 @@ Each requirement's category is in `requirements.md`. Any team member can **escal
 ## White-box rules for Claude
 
 - **Coverage targets (OPEN-12, decided):**
-  - **Backend (Java, JaCoCo):** complexity counter ≥ 90%, branch ≥ 85%, method = 100%. JaCoCo's complexity counter is basis-path coverage, standing in for the plan's "path coverage". Enforce with `jacocoTestCoverageVerification` so the build fails below target.
+  - **Backend (TypeScript, Vitest; changed from Java/JaCoCo on 2026-11-23, see OPEN-12):** branch ≥ 85%, lines ≥ 90%, functions = 100%, enforced by Vitest coverage thresholds so `npm test` fails below target. (The Java plan was JaCoCo complexity ≥ 90%, branch ≥ 85%, method = 100%.) `src/lambda.ts`, the composition root that only reads environment variables and creates AWS clients, is excluded and covered by the deployed smoke test.
   - **Frontend (React + TypeScript):** Vitest + React Testing Library, with Vitest's coverage report: branch ≥ 85%, lines ≥ 90%, every exported function and component tested. Mock the backend API client and the Spotify embed player in component tests.
   - Every method is tested.
 - Name tests after the requirement they verify, e.g. `R_HOME_19_findMatchIgnoresUsersInactiveFor72h()`. Tests for methods with no requirement get a `// spec:` comment naming the method's postcondition.
 - Test against the **spec** (Requires/Effects), not the implementation: cover each partition of each input and each clause of each postcondition, and include boundary values (exactly 72 h, exactly 60 s between messages, 100th vs 101st history entry, 0% and 100% compatibility).
 - Every ADT gets a `checkRep()` and tests that operations preserve the rep invariant.
 - `[RECOMMENDATION]` Black-box requirements still depend on model/controller logic (chat ordering, report flagging, verification gating). Unit-test that logic as well: it doesn't change the requirement's category, and the "every method tested" target requires it anyway.
-- `[RECOMMENDATION]` Concurrency gets explicit tests: many threads confirming the same match yield exactly one chat; concurrent `addMessage` calls lose no message and keep timestamps ordered. Run them against the in-memory store fake (which must give the same atomicity as DynamoDB conditional writes), plus at least one run against DynamoDB Local.
+- `[RECOMMENDATION]` Concurrency gets explicit tests: many threads confirming the same match yield exactly one chat; concurrent `addMessage` calls lose no message and keep timestamps ordered. Run them against the in-memory store fake (which must give the same atomicity as DynamoDB conditional writes), plus at least one run against DynamoDB Local. In the backend, `test/tableContract.ts` runs one set of store assertions against both, and `test/dynamo.test.ts` repeats the concurrency tests on DynamoDB Local.
 - Models take their store as a constructor argument, so unit tests never touch AWS.
 
 White-box requirements (7): R-ACC-04, R-HOME-11, R-HOME-12, R-HOME-17, R-HOME-18, R-HOME-19, R-HOME-22. (R-HOME-02 was removed.)
@@ -48,4 +48,4 @@ Applied at review, by the designer (Sarah) and developers:
 
 - Tests run after every build. White-box testing beyond the suite is at developers' discretion, alongside each build.
 - Commit regularly to GitHub with brief messages.
-- Course: the Release deliverable needs **automation to run the tests and measure coverage** (course C-REL-3), so `./gradlew test jacocoTestReport` (or the equivalent) must work in one command.
+- Course: the Release deliverable needs **automation to run the tests and measure coverage** (course C-REL-3), so one command must do it: `npm test` in `backend/` (needs Docker for DynamoDB Local).

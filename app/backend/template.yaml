@@ -1,0 +1,353 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Do~Re: Lambda backend (one function per controller area), DynamoDB table, HTTP API, and
+  S3 + CloudFront hosting for the React app. Everything here is pay-per-use or free tier;
+  there is no VPC, NAT gateway or always-on compute (CLAUDE.md cost rule).
+
+Parameters:
+  EmailFrom:
+    Type: String
+    Description: SES-verified address that confirmation emails are sent from (OPEN-7).
+  AppBaseUrl:
+    Type: String
+    Default: ''
+    Description: >
+      Origin of the web app, used in confirmation links, e.g. https://d123abc.cloudfront.net
+      (no trailing slash). Unknown before the first deploy: deploy once, copy the AppUrl
+      output here, and deploy again.
+  DevOrigin:
+    Type: String
+    Default: 'http://localhost:5173'
+    Description: >
+      Browser origin allowed to call the API directly (CORS), for running the frontend
+      locally against the deployed backend. The deployed app needs no CORS: CloudFront serves
+      the API on the app's own origin.
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Optional. Address that is emailed when the month's AWS bill passes 0.50 USD.
+
+Conditions:
+  HasAppBaseUrl: !Not [!Equals [!Ref AppBaseUrl, '']]
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    MemorySize: 512
+    Timeout: 15
+    CodeUri: .
+    LoggingConfig:
+      LogGroup: !Ref LogGroup
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref Table
+        EMAIL_FROM: !Ref EmailFrom
+        APP_BASE_URL: !If [HasAppBaseUrl, !Ref AppBaseUrl, 'https://app-base-url-not-set.invalid']
+        PICTURE_BUCKET: !Ref PictureBucket
+
+Resources:
+  # ------------------------------------------------------------------ data
+  # One table for all model state; key layout is in each model's class comment.
+  # Provisioned at 15 RCU + 10 WCU: inside DynamoDB's always-free 25 + 25.
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 15
+        WriteCapacityUnits: 10
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+  # ------------------------------------------------------------------ API
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 25
+      CorsConfiguration:
+        AllowOrigins: [!Ref DevOrigin]
+        AllowHeaders: [authorization, content-type]
+        AllowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+        MaxAge: 600
+
+  # Routes are docs/project/api.md under /api. '{proxy+}' needs at least one more path
+  # segment, so routes that are a bare prefix (/api/accounts, /api/chats) are listed too.
+  AccountFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda.account
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - Statement:
+            - Effect: Allow
+              Action: ses:SendEmail
+              Resource: '*'
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub '${PictureBucket.Arn}/pictures/*'
+      Events:
+        Auth:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/auth/{proxy+}', Method: ANY }
+        Accounts:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/accounts', Method: ANY }
+        AccountsSub:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/accounts/{proxy+}', Method: ANY }
+        Users:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/users/{proxy+}', Method: ANY }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Target: es2022
+        Minify: false
+        EntryPoints: [src/lambda.ts]
+        Loader: ['.csv=text']
+
+  SongFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda.song
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+      Events:
+        Songs:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/songs/{proxy+}', Method: ANY }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Target: es2022
+        Minify: false
+        EntryPoints: [src/lambda.ts]
+        Loader: ['.csv=text']
+
+  MatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda.match
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+      Events:
+        Matches:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/matches/{proxy+}', Method: ANY }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Target: es2022
+        Minify: false
+        EntryPoints: [src/lambda.ts]
+        Loader: ['.csv=text']
+
+  ChatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda.chat
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+      Events:
+        Chats:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/chats', Method: ANY }
+        ChatsSub:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/chats/{proxy+}', Method: ANY }
+        Presence:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/presence/{proxy+}', Method: ANY }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Target: es2022
+        Minify: false
+        EntryPoints: [src/lambda.ts]
+        Loader: ['.csv=text']
+
+  # ------------------------------------------------------------------ web app hosting
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Profile pictures (api.md Q-2), written by the account function under pictures/ and
+  # served by CloudFront at <AppUrl>/pictures/... A separate bucket, so uploading a new
+  # frontend build with `aws s3 sync --delete` cannot remove them.
+  PictureBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  WebOriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-web'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Each view has its own URL route (CLAUDE.md), so a refresh on /home must serve the app.
+  # Done here rather than with distribution error pages, which would also swallow the
+  # API's own 403 and 404 responses.
+  SpaRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub '${AWS::StackName}-spa-rewrite'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Serve index.html for app routes (paths without a file extension)
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var last = request.uri.split('/').pop();
+          if (last.indexOf('.') === -1) {
+            request.uri = '/index.html';
+          }
+          return request;
+        }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AWS::StackName} web app and API'
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccess.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: pictures
+            DomainName: !GetAtt PictureBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccess.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: api
+            DomainName: !Sub '${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # managed: CachingOptimized
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRewriteFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          # Same origin as the app, so the browser needs no CORS and links use one domain.
+          - PathPattern: '/api/*'
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # managed: CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # managed: AllViewerExceptHostHeader
+          - PathPattern: '/pictures/*'
+            TargetOriginId: pictures
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # managed: CachingOptimized
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub '${WebBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+  PictureBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PictureBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub '${PictureBucket.Arn}/pictures/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+  # ------------------------------------------------------------------ cost guard
+  Budget:
+    Type: AWS::Budgets::Budget
+    Condition: HasAlertEmail
+    Properties:
+      Budget:
+        BudgetName: !Sub '${AWS::StackName}-monthly'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: 1, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - { SubscriptionType: EMAIL, Address: !Ref AlertEmail }
+
+Outputs:
+  AppUrl:
+    Description: Where the app is served. Pass this as the AppBaseUrl parameter on the next deploy.
+    Value: !Sub 'https://${Distribution.DomainName}'
+  ApiBaseUrl:
+    Description: Value of VITE_API_BASE_URL for the deployed frontend build.
+    Value: !Sub 'https://${Distribution.DomainName}/api'
+  DevApiBaseUrl:
+    Description: Value of VITE_API_BASE_URL when running the frontend on localhost (direct to the API, CORS allowed).
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api'
+  WebBucketName:
+    Description: Upload the built React app here (aws s3 sync dist/ s3://<this>).
+    Value: !Ref WebBucket
+  DistributionId:
+    Description: For cache invalidation after uploading a new build.
+    Value: !Ref Distribution
+  TableName:
+    Value: !Ref Table

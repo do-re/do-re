@@ -13,7 +13,9 @@ Read when relevant:
 - `docs/project/app-spec.md` — problem, solution, screen layouts, logo/branding.
 - `docs/project/testing.md` — test categories, coverage targets, proofs, review checklist.
 - `docs/course-requirements.md` — course deadlines, deliverables, rules (C-xxx IDs).
-- `architecture-stubs-v2.java` — method signatures and specs to implement against.
+- `architecture-stubs-v2.java` — method signatures and specs: the behaviour spec for the React views and for the TypeScript backend in `backend/src`.
+- `docs/project/api.md` — the HTTP API contract between the frontend client and the backend.
+- `backend/README.md` — backend install, test, deploy, table layout, and differences from the stubs.
 - `docs/assets/ui-sketch.png` (screen sketches), `docs/assets/logo.png` (team logo).
 
 ## Precedence when sources disagree
@@ -41,11 +43,11 @@ Each component has one owner (team plan). Edit freely in the component you were 
 
 ## Working rules
 
-- **Traceability:** before coding, name the requirement IDs the change satisfies (e.g. R-HOME-19). Put them in the commit message, test names, and the method's `Satisfies:` Javadoc line.
-- **Specs:** every method keeps a Javadoc with `Requires:` / `Effects:` (pre/postconditions) and `@param`/`@return`. ADTs keep an abstraction function, rep invariant and `checkRep()`. Implement to the spec; if the spec is wrong, fix the spec first and flag it.
-- **Tests (white-box, written by Claude):** see `testing.md`. Every method is tested; target line ≥ 90%, branch ≥ 85% (JaCoCo, OPEN-12). Partition inputs, hit boundaries (72 h, 60 s, 100 songs, 0% / 100%), and test concurrency where state is shared.
-- **Serverless backend:** Lambda instances share no memory. All model state lives in DynamoDB, reached through store interfaces passed into each model, so tests use an in-memory fake.
-- **Concurrency is a required course concept.** Concurrent requests can hit different Lambda instances, so MatchModel and ChatModel make their operations atomic with DynamoDB conditional writes / transactions. Each class comment has a written argument for this; there are no in-JVM locks for shared state.
+- **Traceability:** before coding, name the requirement IDs the change satisfies (e.g. R-HOME-19). Put them in the commit message, test names, and the method's `Satisfies:` doc-comment line.
+- **Specs:** every method keeps a doc comment (TSDoc in TypeScript) with `Requires:` / `Effects:` (pre/postconditions) and `@param`/`@returns`. ADTs keep an abstraction function, rep invariant and `checkRep()`. Implement to the spec; if the spec is wrong, fix the spec first and flag it.
+- **Tests (white-box, written by Claude):** see `testing.md`. Every method is tested; target line ≥ 90%, branch ≥ 85%, every function called (Vitest coverage, OPEN-12). Partition inputs, hit boundaries (72 h, 60 s, 100 songs, 0% / 100%), and test concurrency where state is shared.
+- **Serverless backend:** Lambda instances share no memory. All model state lives in DynamoDB, reached through the `Table` store interface passed into each model (`backend/src/store`), so tests use the in-memory fake `MemoryTable`.
+- **Concurrency is a required course concept.** Concurrent requests can hit different Lambda instances, so MatchModel and ChatModel make their operations atomic with DynamoDB conditional writes / transactions. Each class comment has a written argument for this; there are no in-process locks for shared state.
 - **Security:** store salted password hashes, never plaintext; never log passwords, tokens or emails. No secrets in the repo (use environment variables or AWS config).
 - **Web front-end practice (React):**
   - Each view is a page with its own URL route, so back/forward and refresh work.
@@ -64,14 +66,14 @@ Each component has one owner (team plan). Edit freely in the component you were 
 ## Stack & commands
 
 - **Frontend:** React + TypeScript single-page app on S3 + CloudFront. Spotify embed player for audio. Tests: Vitest + React Testing Library.
-- **Backend:** Java on AWS Lambda + DynamoDB; Amazon SES for verification emails.
-- **Data:** song library = Chosic playlist CSV export, loaded at backend start.
+- **Backend:** TypeScript on AWS Lambda (Node.js 22) + DynamoDB; Amazon SES for verification emails; S3 for profile pictures. Code in `backend/`, deployed with AWS SAM (`backend/template.yaml`). (Changed from Java on 2026-11-23, OPEN-11.)
+- **Data:** song library = Chosic playlist CSV export at `backend/data/songs.csv`, bundled into the Lambda and loaded at start.
 
-Fill these in once the build is set up:
-- Build: frontend `npm run build` in `frontend/`; backend `TBD`
-- Run server: `TBD` (the frontend runs on its in-memory demo until `VITE_API_BASE_URL` is set)
+Commands (after `npm install` in the folder):
+- Build: frontend `npm run build` in `frontend/`; backend `npm run build` in `backend/` (`sam build`; needs `data/songs.csv`).
+- Run server: there is no local server. Deploy with `npm run deploy` in `backend/` (see `backend/README.md`); the frontend runs on its in-memory demo until `VITE_API_BASE_URL` is set.
 - Run client: `npm run dev` in `frontend/`
-- Tests + coverage: frontend `npm run coverage` in `frontend/`; backend `TBD` (must be one command; course C-REL-3). Backend: JaCoCo complexity ≥ 90%, branch ≥ 85%, method 100%.
+- Tests + coverage: frontend `npm run coverage` in `frontend/`; backend `npm test` in `backend/` (one command each, course C-REL-3). The backend command needs Docker for DynamoDB Local and fails below branch 85%, lines 90%, functions 100%; `npm run test:unit` skips the Docker tests and coverage.
 
 ## Timeline (team plan + course)
 

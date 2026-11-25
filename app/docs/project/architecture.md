@@ -19,16 +19,17 @@ Labels: text without a label is the golden document. `[ADDED]` = filled in from 
 | Part | Runs on | Notes |
 |---|---|---|
 | Frontend (views, ViewController, client half of controllers) | **React + TypeScript** single-page app, built to static files on **S3 + CloudFront** | Each view is a React component; ViewController is the app's routing/state; talks to the backend over HTTPS |
-| Backend (server half of controllers, all models) | **Java on AWS Lambda**, exposed through Lambda Function URLs (or API Gateway) | One handler per controller area: account, song, match, chat |
-| Data | **DynamoDB** (provisioned mode, small capacity, to stay in the free tier) | Accounts, taste vectors + history, active song, matches, chats, heartbeats |
+| Backend (server half of controllers, all models) | **TypeScript on AWS Lambda** (Node.js 22; changed from Java on 2026-11-23, OPEN-11), behind an API Gateway HTTP API that CloudFront serves under `/api/*` | One handler per controller area: account, song, match, chat. Code in `backend/`; API contract in `docs/project/api.md` |
+| Data | **DynamoDB** (one table, provisioned mode, small capacity, to stay in the free tier) | Accounts, sessions, taste vectors + history, active song, matches, chats, heartbeats. Key layout: `backend/README.md` |
 | Song library | Chosic CSV export bundled with the backend | Loaded when a Lambda starts |
 | Email | **Amazon SES** | Production access: Felix (OPEN-7) |
+| Profile pictures | **S3** bucket, served by CloudFront under `/pictures/*` | The account stores only the picture's URL (api.md Q-2) |
 | Audio + album art | **Spotify embed player** in the browser | Plays `spotifyUri`; previews for logged-out listeners |
 
 **Consequences for implementation (read before writing a model):**
 - **Lambda instances share no memory.** Anything a model "stores" must be in DynamoDB, including the suggestion cache, active song, liked flag, swipe count and last-active time. A cold start may hit any instance.
-- **Concurrency (course C-TECH-5) is about requests, not threads in one JVM.** Atomic operations use DynamoDB **conditional writes / transactions**, e.g. match confirmation and appending a chat message. `synchronized` would not protect anything across instances.
-- **Testability:** models reach DynamoDB through small store interfaces, so tests can swap in a thread-safe in-memory fake with the same atomicity guarantees, and concurrency tests can hammer it from a thread pool. Integration tests can use DynamoDB Local.
+- **Concurrency (course C-TECH-5) is about requests, not threads in one JVM.** Atomic operations use DynamoDB **conditional writes / transactions**, e.g. match confirmation and appending a chat message. An in-process lock would not protect anything across instances.
+- **Testability:** models reach DynamoDB through the `Table` store interface, so tests swap in the in-memory fake `MemoryTable`, which has the same conditional-write semantics, and concurrency tests fire many requests at once (`Promise.all`). The same tests also run against DynamoDB Local.
 - **Real-time chat `[RECOMMENDATION]`:** for the MVP, the open ChatView polls `getHistory` every ~3 s, and that poll doubles as the heartbeat that drives the online dot (`recordHeartbeat` / `isUserOnline`, 30 s window). This costs nothing in the Lambda free tier at class scale. API Gateway WebSockets are an upgrade if time allows; they have no free tier on the Free plan, though cost is still pennies.
 
 ```

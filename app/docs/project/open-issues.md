@@ -29,7 +29,8 @@ Claude Code: **do not silently resolve `OPEN` or `ASSUMED` items.** If a task to
 - Chosic's terms page link is broken (404), so there are no published terms to check. Credit Chosic and Spotify in the README.
 
 **OPEN-11 · Hosting and client technology** — DECIDED
-**Decision:** AWS for both. Frontend is **React + TypeScript**, built to static files on S3 + CloudFront; backend is Java on AWS Lambda + DynamoDB (see `architecture.md` → Deployment). The Java view stubs are the behaviour spec for the React components.
+**Decision:** AWS for both. Frontend is **React + TypeScript**, built to static files on S3 + CloudFront; backend is on AWS Lambda + DynamoDB (see `architecture.md` → Deployment). The Java stubs are the behaviour spec for the React components.
+**Changed 2026-11-23 (Felix): the backend is TypeScript (Node.js Lambda), not Java.** The course allows any language (C-TECH-5). Reasons: one language and test runner across client and server, so the frontend's HTTP client can be tested directly against the backend (`backend/test/contract.test.ts`), and fast cold starts. The Java stubs are now the behaviour spec for the backend too; `backend/README.md` lists where the implementation differs. **The rest of the team has not confirmed this change yet.**
 
 **OPEN-5 · "Nearby" matching** — DECIDED
 **Decision:** No location matching. With so few users, filtering by distance would leave no one to match. Matching uses taste + the 72 h activity window only. Don't add location fields.
@@ -39,7 +40,8 @@ Claude Code: **do not silently resolve `OPEN` or `ASSUMED` items.** If a task to
 
 **OPEN-12 · Coverage metric** — DECIDED (proposed; confirm wording in the M3 plan)
 JaCoCo has no path coverage, but its **COMPLEXITY counter is basis-path coverage**: cyclomatic complexity is the minimum number of independent paths through a method, and JaCoCo reports how many are still missed.
-**Targets:** backend Java **complexity (basis path) ≥ 90%, branch ≥ 85%, method = 100%**, enforced by `jacocoTestCoverageVerification`. Frontend TypeScript: branch ≥ 85%, lines ≥ 90% via the test runner's coverage report. Suggested plan wording: "≥ 90% basis-path coverage (JaCoCo cyclomatic-complexity counter) and ≥ 85% branch coverage."
+**Targets (written for a Java backend):** backend Java **complexity (basis path) ≥ 90%, branch ≥ 85%, method = 100%**, enforced by `jacocoTestCoverageVerification`. Frontend TypeScript: branch ≥ 85%, lines ≥ 90% via the test runner's coverage report. Suggested plan wording: "≥ 90% basis-path coverage (JaCoCo cyclomatic-complexity counter) and ≥ 85% branch coverage."
+**Changed 2026-11-23 with the move to TypeScript (OPEN-11) — needs team confirmation:** JaCoCo does not apply. The backend now enforces **branch ≥ 85%, lines ≥ 90%, functions = 100%** with Vitest's coverage thresholds (`npm test` fails below them). This is a weaker claim than basis-path coverage, so the M3 plan wording should change to match, e.g. "≥ 90% line coverage, ≥ 85% branch coverage, and every function called by a test."
 
 **OPEN-13 · Graded repository** — DECIDED: the team will make sure work is pushed to the course repo (`CPEN-221-2026/cpen-221-2026-project-<n>`, `milestone-<k>` branches).
 
@@ -81,6 +83,9 @@ Working assumption: email only (golden). Suggest rewording R-ACC-03/07 to "email
 
 **OPEN-10 · Bottom bar on every view** — ASSUMED
 Working assumption: hidden on LoginView and CreateAccountView, shown everywhere else.
+
+**OPEN-16 · The API tells callers which emails have accounts** — ASSUMED (new, 2026-11-24)
+Three public routes reveal whether an email has an account: login (`WRONG_PASSWORD` vs `NO_ACCOUNT`, as in the stubs), sign-up (`EMAIL_IN_USE`, required by the CreateAccountView spec) and `verification-status` (notes-for-felix F-5, api.md Q-12). Working assumption: keep all three as the frontend was built against them; the login page already shows one message for both login failures, and `verification-status` answers `false` for an unknown email. Closing this fully means a pending-signup ID for the poll and a single login failure result, which changes the client.
 
 **OPEN-15 · Bounded Taste Vector update** — ASSUMED
 Working assumption: `t ← clamp(t + w·(f − t), 0, 1)` with |w| ≤ MAX_STEP. This is the golden "add features × weight" idea, but bounded, which makes the "won't explode" proof possible.

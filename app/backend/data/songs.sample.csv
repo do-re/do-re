@@ -1,0 +1,7 @@
+Song,Artist,Time,Dance,Energy,Acoustic,Instrumental,Happy,Speech,Live,Spotify Track Id,Spotify Track Img
+Sample Song One,Sample Artist,3:25,62,71,12,0,80,5,11,SAMPLEID0000000000001,https://example.invalid/cover1.jpg
+Sample Song Two,Sample Artist,2:58,45,33,78,2,35,4,9,SAMPLEID0000000000002,https://example.invalid/cover2.jpg
+"Sample Song, Three",Another Artist,4:10,80,90,3,0,66,12,30,SAMPLEID0000000000003,https://example.invalid/cover3.jpg
+Sample Song Four,Another Artist,3:02,30,20,91,60,15,3,8,SAMPLEID0000000000004,https://example.invalid/cover4.jpg
+Sample Song Five,Third Artist,3:47,71,55,25,0,50,30,14,SAMPLEID0000000000005,https://example.invalid/cover5.jpg
+Sample Song Six,Third Artist,5:16,55,64,40,10,72,6,22,SAMPLEID0000000000006,https://example.invalid/cover6.jpg
