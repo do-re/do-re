@@ -15,6 +15,7 @@ export type ApiErrorCode =
   | 'MATCH_NOT_FOUND'
   | 'SONG_NOT_ACTIVE'
   | 'RATE_LIMITED'
+  | 'NOT_ADMIN'
   | 'INTERNAL'
   | 'NETWORK_ERROR';
 
@@ -30,6 +31,7 @@ export const SERVER_ERROR_CODES: readonly ApiErrorCode[] = [
   'MATCH_NOT_FOUND',
   'SONG_NOT_ACTIVE',
   'RATE_LIMITED',
+  'NOT_ADMIN',
   'INTERNAL',
 ];
 

@@ -4,17 +4,22 @@
  * and ends when the user logs out or the server rejects its token.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { clearStoredSession, readStoredUserId, SESSION_EXPIRED_EVENT, storeSession } from './sessionStore';
+import { clearStoredSession, readStoredAdmin, readStoredUserId, SESSION_EXPIRED_EVENT, storeSession } from './sessionStore';
 
 export interface Session {
   /** The logged-in user's ID, or null when logged out. */
   readonly userId: string | null;
   /**
-   * Effects: userId becomes the given ID and is remembered for this browser tab, with the session
-   *          token if one is given.
+   * Whether the logged-in user was an admin when they logged in (OPEN-18). It only decides
+   * whether the Admin tab is shown; the server checks every admin request itself.
    */
-  logIn(userId: string, token?: string): void;
-  /** Effects: userId becomes null, and the ID and token are forgotten. */
+  readonly isAdmin: boolean;
+  /**
+   * Effects: userId becomes the given ID and is remembered for this browser tab, with the session
+   *          token if one is given, and with whether the user is an admin.
+   */
+  logIn(userId: string, token?: string, isAdmin?: boolean): void;
+  /** Effects: userId becomes null, and the ID, token and admin flag are forgotten. */
   logOut(): void;
 }
 
@@ -29,13 +34,16 @@ export function SessionProvider({ children, initialUserId }: { children: ReactNo
   const [userId, setUserId] = useState<string | null>(() =>
     initialUserId !== undefined ? initialUserId : readStoredUserId(),
   );
-  const logIn = useCallback((id: string, token?: string) => {
-    storeSession(id, token);
+  const [isAdmin, setIsAdmin] = useState(readStoredAdmin);
+  const logIn = useCallback((id: string, token?: string, admin = false) => {
+    storeSession(id, token, admin);
     setUserId(id);
+    setIsAdmin(admin);
   }, []);
   const logOut = useCallback(() => {
     clearStoredSession();
     setUserId(null);
+    setIsAdmin(false);
   }, []);
 
   useEffect(() => {
@@ -43,7 +51,7 @@ export function SessionProvider({ children, initialUserId }: { children: ReactNo
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, logOut);
   }, [logOut]);
 
-  const session = useMemo(() => ({ userId, logIn, logOut }), [userId, logIn, logOut]);
+  const session = useMemo(() => ({ userId, isAdmin, logIn, logOut }), [userId, isAdmin, logIn, logOut]);
   return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
 }
 

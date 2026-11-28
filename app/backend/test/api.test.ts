@@ -132,7 +132,7 @@ describe('HTTP API: request handling', () => {
   it('reports a failed confirmation email as 502 with a message that says what to do', async () => {
     const world = makeWorld();
     world.email.failing = true;
-    const body = { email: 'ada@example.com', password: 'pw', confirmPassword: 'pw' };
+    const body = { email: 'ada@example.com', password: 'pw-12345', confirmPassword: 'pw-12345' };
     const response = await world.call('POST', '/api/accounts', { body });
     expect(response.status).toBe(502);
     expect(errorOf(response).code).toBe('EMAIL_SEND_FAILED');
@@ -181,10 +181,10 @@ describe('Lambda adapter', () => {
     const login = await handler(event({ body: JSON.stringify({ email: 'nobody@example.com', password: 'x' }) }));
     expect(login).toEqual({
       statusCode: 200,
-      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-      body: '{"result":"NO_ACCOUNT"}',
+      headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
+      body: '{"result":"WRONG_PASSWORD"}',
     });
-    const signup = { email: 'ada@example.com', password: 'pw', confirmPassword: 'pw' };
+    const signup = { email: 'ada@example.com', password: 'pw-12345', confirmPassword: 'pw-12345' };
     expect((await handler(event({ rawPath: '/api/accounts', body: JSON.stringify(signup) }))).statusCode).toBe(200);
 
     const { token } = await world.join('bea@example.com');
@@ -204,6 +204,7 @@ describe('Lambda adapter', () => {
       ['GET', '/api/matches/pending'],
       ['GET', '/api/chats'],
       ['POST', '/api/presence/heartbeat'],
+      ['GET', '/api/push/public-key'],
     ] as const) {
       const results = await Promise.all(
         handlers.map((handler) => handler(event({ method, rawPath, headers: { authorization: `Bearer ${token}` } }))),

@@ -10,8 +10,11 @@
  *
  * The embed stays visible as a compact strip, which keeps Spotify's attribution on screen.
  *
- * NOT YET CHECKED AGAINST REAL SPOTIFY: the mock songs have placeholder URIs (mockSeed.ts).
- * Check this file by hand once real track URIs exist (notes-for-felix F-8).
+ * Checked against real Spotify on 2026-11-25 (headless Chromium, not logged in to Spotify, real
+ * track URIs served by the backend): the embed loads and plays the 29-second preview, and
+ * pause, resume from the same position, loading the next track and going back all work.
+ * Not checked: a listener logged in to Spotify (full-length playback), and browsers that block
+ * autoplay until the first tap.
  */
 import type { PlaybackState, SongPlayer } from './types';
 

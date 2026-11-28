@@ -1,4 +1,4 @@
-import type { RandomSource } from '../deps';
+import type { Clock, RandomSource } from '../deps';
 import { badRequest, pictureTooLarge, userNotFound } from '../errors';
 import type { UserProfile } from '../model/types';
 import { attributesOf, type Item, type Key, type Table, updateItem } from '../store/Table';
@@ -7,6 +7,30 @@ import type { PictureStore, PictureType } from './PictureStore';
 
 const accountKey = (userId: string): Key => ({ pk: `USER#${userId}`, sk: 'PROFILE' });
 const emailKey = (email: string): Key => ({ pk: `EMAIL#${email}`, sk: 'EMAIL' });
+/** One item per account in a single partition, so admins can list users (Table has no scan). */
+const USERS = 'USERS';
+const indexKey = (userId: string): Key => ({ pk: USERS, sk: `USER#${userId}` });
+
+/** Why and by whom an account was suspended. */
+export interface Suspension {
+  readonly at: number;
+  /** The admin who suspended the account. */
+  readonly by: string;
+  readonly reason: string;
+}
+
+/** An account as admins see it. Never includes the password hash. */
+export interface AccountRecord {
+  readonly userId: string;
+  readonly email: string;
+  readonly username: string;
+  /** Whether the email has been verified. */
+  readonly active: boolean;
+  /** Whether an admin granted this account admin rights (root admins are named in config instead). */
+  readonly admin: boolean;
+  readonly suspended: Suspension | null;
+  readonly createdAt: number;
+}
 
 /**
  * @param email an email address as typed
@@ -44,6 +68,7 @@ export function sniffImageType(bytes: Uint8Array): PictureType | undefined {
  * Stored state (DynamoDB items):
  *   USER#<id> / PROFILE   email, salt, hash, cost, active, username, pictureUrl?
  *   EMAIL#<email> / EMAIL userId           (the claim that makes emails unique)
+ *   USERS / USER#<id>     createdAt        (the list of all accounts, for admins)
  * Picture files themselves are in the PictureStore (S3); the account holds only the URL.
  *
  * Abstraction function: AF(table) = the set of accounts, one per PROFILE item, each
@@ -65,11 +90,15 @@ export class AccountModel {
    */
   static readonly MAX_PICTURE_BYTES = 4 * 1024 * 1024;
 
+  /** A record no password matches, hashed against when the email is unknown (see isValidLogin). */
+  private decoy: Promise<PasswordRecord> | undefined;
+
   constructor(
     private readonly table: Table,
     private readonly hasher: PasswordHasher,
     private readonly random: RandomSource,
     private readonly pictures: PictureStore,
+    private readonly clock: Clock = Date.now,
   ) {}
 
   /**
@@ -84,11 +113,15 @@ export class AccountModel {
    * Satisfies: R-ACC-04.
    * Effects: none.
    * @returns true iff an account exists with this email and hashing password with that
-   *          account's stored salt gives the stored hash
+   *          account's stored salt gives the stored hash. When no account uses the email, a
+   *          hash is still computed and thrown away, so the time taken does not tell a
+   *          caller which emails have accounts.
    */
   async isValidLogin(email: string, password: string): Promise<boolean> {
     const claim = await this.table.get(emailKey(normalizeEmail(email)));
     if (claim === undefined) {
+      this.decoy ??= this.hasher.hash('decoy');
+      await this.hasher.verify(password, await this.decoy);
       return false;
     }
     const account = await this.requireAccount(claim.userId as string);
@@ -120,11 +153,32 @@ export class AccountModel {
       { op: 'put', item: { ...emailKey(address), version: 1, userId }, expect: 'absent' },
       {
         op: 'put',
-        item: { ...accountKey(userId), version: 1, email: address, ...record, active: false, username: '' },
+        item: { ...accountKey(userId), version: 1, email: address, ...record, active: false, username: '', createdAt: this.clock() },
         expect: 'absent',
       },
+      { op: 'put', item: { ...indexKey(userId), version: 1, createdAt: this.clock() }, expect: 'absent' },
     ]);
     return created ? userId : undefined;
+  }
+
+  /**
+   * Gives an account that was never verified a new password (see
+   * AccountController.createAccount: signing up again over an unverified account).
+   *
+   * Requires: userId belongs to an existing account; password is non-empty.
+   * Effects: if the account is unverified and not suspended, its salt and hash are replaced
+   *          with new ones for password; otherwise nothing changes.
+   * @returns true iff the password was replaced
+   * @throws AppError 404 if there is no such account
+   */
+  async replaceUnverifiedPassword(userId: string, password: string): Promise<boolean> {
+    const record = await this.hasher.hash(password);
+    let replaced = false;
+    await this.change(userId, (account) => {
+      replaced = account.active !== true && !account.suspended;
+      return replaced ? { ...account, ...record } : undefined;
+    });
+    return replaced;
   }
 
   /**
@@ -161,8 +215,8 @@ export class AccountModel {
   }
 
   /**
-   * Requires: userId belongs to an existing account; username is non-empty after trimming
-   *           and at most MAX_USERNAME_LENGTH characters.
+   * Requires: userId belongs to an existing account; username is non-empty after trimming,
+   *           at most MAX_USERNAME_LENGTH characters, with no control or invisible characters.
    * Effects: the account's stored username is replaced with the trimmed username.
    * @throws AppError 400 if the username is not acceptable; 404 if there is no such account
    */
@@ -170,6 +224,11 @@ export class AccountModel {
     const name = username.trim();
     if (name === '' || name.length > AccountModel.MAX_USERNAME_LENGTH) {
       throw badRequest(`Choose a username between 1 and ${AccountModel.MAX_USERNAME_LENGTH} characters long.`);
+    }
+    // Control and invisible formatting characters (zero-width, direction overrides) let one
+    // name pass for another on screen, so they are not allowed.
+    if (/[\p{Cc}\p{Cf}]/u.test(name)) {
+      throw badRequest('Usernames cannot contain invisible or control characters.');
     }
     await this.change(userId, (account) => ({ ...account, username: name }));
   }
@@ -211,6 +270,57 @@ export class AccountModel {
     };
   }
 
+  /**
+   * Requires: userId belongs to an existing account.
+   * Effects: none.
+   * @returns the account as admins see it
+   * @throws AppError 404 if there is no such account
+   */
+  async getAccount(userId: string): Promise<AccountRecord> {
+    return recordOf(userId, await this.requireAccount(userId));
+  }
+
+  /**
+   * Effects: none.
+   * @returns every account, oldest first
+   */
+  async listUsers(): Promise<AccountRecord[]> {
+    const index = await this.table.query(USERS);
+    const ids = index.map((item) => item.sk.slice('USER#'.length));
+    const accounts = await Promise.all(ids.map((id) => this.table.get(accountKey(id))));
+    return accounts
+      .flatMap((account, i) => (account === undefined ? [] : [recordOf(ids[i]!, account)]))
+      .sort((a, b) => a.createdAt - b.createdAt || (a.userId < b.userId ? -1 : 1));
+  }
+
+  /**
+   * Requires: userId belongs to an existing account.
+   * Effects: the account has admin rights iff admin is true.
+   * @throws AppError 404 if there is no such account
+   */
+  async setAdmin(userId: string, admin: boolean): Promise<void> {
+    await this.change(userId, (account) => ({ ...account, admin }));
+  }
+
+  /**
+   * Requires: userId belongs to an existing account.
+   * Effects: if the account is not suspended, it becomes suspended with this record;
+   *          an existing suspension is left as it is.
+   * @throws AppError 404 if there is no such account
+   */
+  async suspend(userId: string, suspension: Suspension): Promise<void> {
+    await this.change(userId, (account) => (account.suspended ? undefined : { ...account, suspended: { ...suspension } }));
+  }
+
+  /**
+   * Requires: userId belongs to an existing account.
+   * Effects: the account is not suspended afterwards.
+   * @throws AppError 404 if there is no such account
+   */
+  async unsuspend(userId: string): Promise<void> {
+    await this.change(userId, ({ suspended: _suspended, ...account }) => account);
+  }
+
   private async requireAccount(userId: string): Promise<Item> {
     const account = await this.table.get(accountKey(userId));
     if (account === undefined) {
@@ -231,4 +341,16 @@ export class AccountModel {
       return { attrs: edit(attributesOf(current)), result: undefined };
     });
   }
+}
+
+function recordOf(userId: string, account: Item): AccountRecord {
+  return {
+    userId,
+    email: account.email as string,
+    username: account.username as string,
+    active: account.active === true,
+    admin: account.admin === true,
+    suspended: (account.suspended as Suspension | undefined) ?? null,
+    createdAt: (account.createdAt ?? 0) as number,
+  };
 }

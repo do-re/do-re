@@ -45,7 +45,7 @@ export class SongLibrary {
 }
 
 /** Accepted header names (lower-cased) for each column of the Chosic CSV export. */
-const COLUMNS = {
+export const COLUMNS = {
   id: ['spotify track id', 'track id', 'spotify id', 'id'],
   title: ['song', 'title', 'track', 'track name', 'name'],
   artist: ['artist', 'artists', 'artist name(s)'],

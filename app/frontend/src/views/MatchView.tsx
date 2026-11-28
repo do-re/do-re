@@ -12,12 +12,13 @@
  * Communicates with: MatchController and AccountController (via useApi()), ViewController
  * (via the router).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useApi } from '../api/ApiContext';
 import { displayName } from '../api/profile';
 import { Avatar } from '../components/Avatar';
-import type { Match, UserProfile } from '../api/types';
+import { MAX_REPORT_DETAILS, REPORT_REASONS, type Match, type ReportReason, type UserProfile } from '../api/types';
+import { Modal } from '../components/Modal';
 import { PATHS } from '../paths';
 import { useSession } from '../session/SessionContext';
 import './match.css';
@@ -49,6 +50,14 @@ function MatchPage({ matchId }: { matchId: string }) {
   const [attempt, setAttempt] = useState(0);
   const [answering, setAnswering] = useState(false);
   const [answerError, setAnswerError] = useState<string | null>(null);
+
+  // The Report dialog (OPEN-18).
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reason, setReason] = useState<ReportReason | null>(null);
+  const [details, setDetails] = useState('');
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reporting, setReporting] = useState(false);
+  const reportButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,6 +118,38 @@ function MatchPage({ matchId }: { matchId: string }) {
     } catch {
       setAnswerError("Couldn't save your answer. Check your connection and try again.");
       setAnswering(false);
+    }
+  }
+
+  /**
+   * WEB: the Report dialog's submit (OPEN-18).
+   * Requires: a match is displayed.
+   * Effects: checks that a reason is chosen and the details fit; sends the report, which also
+   *          declines the match; then goes home with a notice. On failure, stays in the dialog
+   *          and says what to do.
+   */
+  async function submitReport(event: FormEvent) {
+    event.preventDefault();
+    if (load.kind !== 'ready' || reporting) return;
+    if (reason === null) {
+      setReportError('Choose a reason.');
+      return;
+    }
+    if (details.length > MAX_REPORT_DETAILS) {
+      setReportError(`Keep the details to ${MAX_REPORT_DETAILS} characters or fewer.`);
+      return;
+    }
+    setReporting(true);
+    setReportError(null);
+    try {
+      await api.matches.reportProfile(load.match, userId, reason, details);
+      navigate(PATHS.home, {
+        replace: true,
+        state: { notice: `Thanks. We'll review your report about ${displayName(load.other)}, and you won't be matched again.` },
+      });
+    } catch {
+      setReportError("Couldn't send your report. Check your connection and try again.");
+      setReporting(false);
     }
   }
 
@@ -182,11 +223,77 @@ function MatchPage({ matchId }: { matchId: string }) {
               {answerError}
             </p>
           )}
+
+          <button
+            type="button"
+            className="match__report"
+            ref={reportButtonRef}
+            onClick={() => setReportOpen(true)}
+            disabled={answering}
+          >
+            Report {displayName(load.other)}
+          </button>
+
+          {reportOpen && (
+            <Modal title={`Report ${displayName(load.other)}`} onClose={() => setReportOpen(false)} returnFocusTo={reportButtonRef}>
+              <form className="auth-form" onSubmit={(event) => void submitReport(event)} noValidate aria-busy={reporting}>
+                <fieldset className="match__reasons">
+                  <legend>What is wrong with this profile?</legend>
+                  {REPORT_REASONS.map((value) => (
+                    <label key={value}>
+                      <input
+                        type="radio"
+                        name="report-reason"
+                        value={value}
+                        checked={reason === value}
+                        onChange={() => {
+                          setReason(value);
+                          setReportError(null);
+                        }}
+                      />
+                      {REASON_LABELS[value]}
+                    </label>
+                  ))}
+                </fieldset>
+                <label htmlFor="report-details">Details (optional)</label>
+                <textarea
+                  id="report-details"
+                  rows={3}
+                  maxLength={MAX_REPORT_DETAILS}
+                  value={details}
+                  onChange={(event) => setDetails(event.target.value)}
+                />
+                <p className="match__hint">Reporting also skips this match. Only the Do~Re admins see your report.</p>
+                {reportError !== null && (
+                  <p className="match__problem" role="alert">
+                    {reportError}
+                  </p>
+                )}
+                <div className="match__actions">
+                  <button type="button" className="match__button match__button--secondary" onClick={() => setReportOpen(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="match__button" disabled={reporting}>
+                    {reporting ? 'Sending…' : 'Send report'}
+                  </button>
+                </div>
+              </form>
+            </Modal>
+          )}
         </>
       )}
     </main>
   );
 }
+
+/** What each report reason says on screen. */
+const REASON_LABELS: Record<ReportReason, string> = {
+  FAKE_ACCOUNT: 'Fake account or pretending to be someone else',
+  HARASSMENT: 'Harassment or threats',
+  INAPPROPRIATE: 'Inappropriate name or picture',
+  SPAM: 'Spam or advertising',
+  OTHER: 'Something else',
+};
 
 /** One matched user: their round picture with their name under it. */
 function Person({ profile, label }: { profile: UserProfile; label: string }) {

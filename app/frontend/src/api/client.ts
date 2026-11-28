@@ -9,6 +9,9 @@
  * (sendConfirmationEmail, getTasteVector, onAppOpened) are not exposed to the browser.
  */
 import type {
+  AdminReport,
+  AdminUser,
+  AuditEntry,
   ChatHistory,
   ChatMessage,
   ChatSummary,
@@ -16,6 +19,8 @@ import type {
   Feedback,
   LoginResponse,
   Match,
+  OutgoingMatch,
+  ReportReason,
   Song,
   SwipeResult,
   UndoResult,
@@ -35,6 +40,13 @@ export interface AccountApi {
    *          NO_ACCOUNT if no account uses the email
    */
   login(email: string, password: string): Promise<LoginResponse>;
+
+  /**
+   * WEB: ends the session on the server, so the token stops working even if someone copied it.
+   * Requires: the user is logged in.
+   * Effects: the current session token is no longer valid.
+   */
+  logout(): Promise<void>;
 
   /**
    * Satisfies: R-ACC-02, R-ACC-08, R-ACC-09, R-SEC-01.
@@ -179,6 +191,69 @@ export interface MatchApi {
    * Effects: records the decline; the pair is never proposed again.
    */
   declineMatch(match: Match, userId: string): Promise<void>;
+
+  /**
+   * WEB: the "Waiting for an answer" list on the Messages page.
+   * Requires: userId is logged in.
+   * Effects: none.
+   * @returns matches userId said yes to that the other person has not answered, best match first
+   */
+  getOutgoingMatches(userId: string): Promise<OutgoingMatch[]>;
+
+  /**
+   * WEB: takes back userId's yes to a match the other person has not answered.
+   * Requires: userId confirmed match and the other user has not answered it.
+   * Effects: the match is declined: the other person no longer sees it and the pair is never
+   *          proposed again.
+   * @throws ApiError (409) if the other person answered in the meantime
+   */
+  retractMatch(match: Match, userId: string): Promise<void>;
+
+  /**
+   * WEB: the Report button on the match screen (OPEN-18).
+   * Requires: userId is one of match's users; details has at most MAX_REPORT_DETAILS characters.
+   * Effects: files a report about the other user for the admins and declines the match, so the
+   *          pair is not proposed again. Reporting the same person again changes nothing.
+   */
+  reportProfile(match: Match, userId: string, reason: ReportReason, details: string): Promise<void>;
+}
+
+/**
+ * WEB: the admin page (owner: Felix; OPEN-18, api.md "Admin"). Every method requires adminId to be
+ * an admin and rejects with a 403 ApiError (NOT_ADMIN) otherwise; the server checks, whatever the
+ * page shows. adminId identifies the caller to the mock; the HTTP client sends only the token.
+ */
+export interface AdminApi {
+  /** @returns every account, oldest first */
+  listUsers(adminId: string): Promise<AdminUser[]>;
+
+  /**
+   * Requires: userId is another account that is not a root admin; reason is 1 to
+   *           MAX_SUSPEND_REASON characters.
+   * Effects: the account cannot log in, is logged out everywhere and leaves matching.
+   */
+  suspend(adminId: string, userId: string, reason: string): Promise<void>;
+
+  /** Effects: the account can log in again. */
+  unsuspend(adminId: string, userId: string): Promise<void>;
+
+  /** Effects: the account's email counts as verified. */
+  verify(adminId: string, userId: string): Promise<void>;
+
+  /**
+   * Requires: userId is another account that is not a root admin.
+   * Effects: the account has admin rights iff admin is true.
+   */
+  setAdmin(adminId: string, userId: string, admin: boolean): Promise<void>;
+
+  /** @returns every report, open ones first */
+  listReports(adminId: string): Promise<AdminReport[]>;
+
+  /** Effects: the report is marked handled by adminId, with the note. */
+  resolveReport(adminId: string, reportId: string, note: string): Promise<void>;
+
+  /** @returns the latest admin actions, newest first */
+  auditLog(adminId: string): Promise<AuditEntry[]>;
 }
 
 /**
@@ -239,6 +314,38 @@ export interface ChatApi {
   recordHeartbeat(userId: string): Promise<void>;
 }
 
+/** A browser's push subscription, as `PushSubscription.toJSON()` gives it. */
+export interface BrowserSubscription {
+  readonly endpoint: string;
+  readonly keys: { readonly p256dh: string; readonly auth: string };
+}
+
+/**
+ * WEB: push notifications for matches and chat messages (owner: Felix; api.md "Push
+ * notifications"). Not in the Java stubs. The caller is identified by the session token.
+ */
+export interface PushApi {
+  /**
+   * Requires: the user is logged in.
+   * Effects: none.
+   * @returns the server's Web Push public key (base64url), which a browser subscribes with
+   * @throws ApiError if the server has no push key (or, in the demo, always)
+   */
+  getPublicKey(): Promise<string>;
+
+  /**
+   * Requires: the user is logged in; subscription came from this browser's PushManager.
+   * Effects: this browser receives the logged-in user's notifications, and no other user's.
+   */
+  saveSubscription(subscription: BrowserSubscription): Promise<void>;
+
+  /**
+   * Requires: the user is logged in.
+   * Effects: the browser with this endpoint no longer receives the user's notifications.
+   */
+  removeSubscription(endpoint: string): Promise<void>;
+}
+
 /** What only the demo backend offers, because it can't send real email. */
 export interface DemoTools {
   /**
@@ -255,6 +362,8 @@ export interface Api {
   readonly songs: SongApi;
   readonly matches: MatchApi;
   readonly chats: ChatApi;
+  readonly push: PushApi;
+  readonly admin: AdminApi;
   /** Present only on the mock. */
   readonly demo?: DemoTools;
 }

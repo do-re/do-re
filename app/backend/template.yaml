@@ -23,6 +23,26 @@ Parameters:
       Browser origin allowed to call the API directly (CORS), for running the frontend
       locally against the deployed backend. The deployed app needs no CORS: CloudFront serves
       the API on the app's own origin.
+  AdminEmails:
+    Type: String
+    Default: ''
+    Description: >
+      Comma-separated emails of the root admin accounts (OPEN-18). These accounts are always
+      admins and cannot be demoted or suspended from the admin panel; they can give admin
+      rights to others. Each still signs up and verifies like any user.
+  VapidPublicKey:
+    Type: String
+    Default: ''
+    Description: >
+      Web Push public key, from `npm run push:keys`. Not a secret: browsers receive it.
+      Leave empty to deploy without push notifications.
+  VapidPrivateKeyParameter:
+    Type: String
+    Default: do-re/vapid-private-key
+    Description: >
+      Name (without the leading slash) of the SSM Parameter Store SecureString that holds
+      the Web Push private key. Create it with the command `npm run push:keys` prints; the
+      key itself never goes in this template or the repository.
   AlertEmail:
     Type: String
     Default: ''
@@ -47,6 +67,9 @@ Globals:
         EMAIL_FROM: !Ref EmailFrom
         APP_BASE_URL: !If [HasAppBaseUrl, !Ref AppBaseUrl, 'https://app-base-url-not-set.invalid']
         PICTURE_BUCKET: !Ref PictureBucket
+        EVENT_TOPIC_ARN: !Ref EventTopic
+        VAPID_PUBLIC_KEY: !Ref VapidPublicKey
+        ADMIN_EMAILS: !Ref AdminEmails
 
 Resources:
   # ------------------------------------------------------------------ data
@@ -74,6 +97,37 @@ Resources:
     Properties:
       RetentionInDays: 7
 
+  # ------------------------------------------------------------------ push notifications
+  # Match and chat events are published here by the song, match and chat functions; the
+  # notifier function turns each into Web Push requests to the recipient's browsers. The
+  # topic keeps push delivery off the request path. First 1M publishes a month are free.
+  EventTopic:
+    Type: AWS::SNS::Topic
+
+  NotifierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda.notifier
+      Timeout: 30
+      Environment:
+        Variables:
+          VAPID_PRIVATE_KEY_PARAMETER: !Sub '/${VapidPrivateKeyParameter}'
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - SSMParameterReadPolicy: { ParameterName: !Ref VapidPrivateKeyParameter }
+      Events:
+        Events:
+          Type: SNS
+          Properties: { Topic: !Ref EventTopic }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Target: es2022
+        Minify: false
+        EntryPoints: [src/lambda.ts]
+        Loader: ['.csv=text']
+
   # ------------------------------------------------------------------ API
   HttpApi:
     Type: AWS::Serverless::HttpApi
@@ -98,7 +152,7 @@ Resources:
         - Statement:
             - Effect: Allow
               Action: ses:SendEmail
-              Resource: '*'
+              Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
             - Effect: Allow
               Action: s3:PutObject
               Resource: !Sub '${PictureBucket.Arn}/pictures/*'
@@ -115,6 +169,12 @@ Resources:
         Users:
           Type: HttpApi
           Properties: { ApiId: !Ref HttpApi, Path: '/api/users/{proxy+}', Method: ANY }
+        Push:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/push/{proxy+}', Method: ANY }
+        Admin:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: '/api/admin/{proxy+}', Method: ANY }
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -130,6 +190,7 @@ Resources:
       Handler: lambda.song
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt EventTopic.TopicName }
       Events:
         Songs:
           Type: HttpApi
@@ -149,6 +210,7 @@ Resources:
       Handler: lambda.match
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt EventTopic.TopicName }
       Events:
         Matches:
           Type: HttpApi
@@ -168,6 +230,7 @@ Resources:
       Handler: lambda.chat
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt EventTopic.TopicName }
       Events:
         Chats:
           Type: HttpApi
@@ -269,6 +332,7 @@ Resources:
           ViewerProtocolPolicy: redirect-to-https
           Compress: true
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # managed: CachingOptimized
+          ResponseHeadersPolicyId: !Ref SecurityHeaders
           FunctionAssociations:
             - EventType: viewer-request
               FunctionARN: !GetAtt SpaRewriteFunction.FunctionMetadata.FunctionARN
@@ -279,12 +343,28 @@ Resources:
             ViewerProtocolPolicy: https-only
             AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # managed: CachingDisabled
+            ResponseHeadersPolicyId: !Ref SecurityHeaders
             OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # managed: AllViewerExceptHostHeader
           - PathPattern: '/pictures/*'
             TargetOriginId: pictures
             ViewerProtocolPolicy: redirect-to-https
             Compress: true
             CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # managed: CachingOptimized
+            ResponseHeadersPolicyId: !Ref SecurityHeaders
+
+  # Sent with every response from the app's origin: no MIME sniffing (uploaded pictures are
+  # served from here), no framing by other sites (clickjacking), HTTPS only, and only the
+  # origin in the Referer header (the confirmation link's token is in the page URL).
+  SecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub '${AWS::StackName}-security-headers'
+        SecurityHeadersConfig:
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ReferrerPolicy: { ReferrerPolicy: strict-origin-when-cross-origin, Override: true }
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true, Override: true }
 
   WebBucketPolicy:
     Type: AWS::S3::BucketPolicy

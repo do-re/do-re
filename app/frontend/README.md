@@ -16,8 +16,30 @@ npm run lint
 
 ## Running on the real backend
 
-Copy `.env.example` to `.env.local` and set `VITE_API_BASE_URL`. The app then uses the real API and
-the Spotify player. Without it, the app runs the demo. See `../docs/project/frontend-handoff.md`.
+Copy `.env.example` to `.env.local`. The app then uses the real API and the Spotify player instead
+of the demo; delete `.env.local` to go back to the demo. See `../docs/project/frontend-handoff.md`.
+
+- **Local backend:** run `npm run dev` in `../backend` (see `../backend/README.md`) and keep the
+  default `VITE_API_BASE_URL=http://localhost:8787/api`. Log in as `demo1@do-re.test` or
+  `demo2@do-re.test`, password `demo-pass-1`. Sign-up works too: the confirmation link is printed in
+  the backend's terminal.
+- **Deployed backend:** set it to the backend stack's `ApiBaseUrl` output.
+
+## Seeing a new match
+
+A match made by someone else's swipe shows up without reloading: the Home tab gets a red badge with the number of matches waiting for your answer, on every page, and Home shows a "You have a new match!" banner with a button to open it. The list is re-read on every page change, every 15 seconds, and at once when a push notification arrives (`src/matches/`). Home still opens a match by itself the first time you land there; after that it stays in the banner until you answer.
+
+## Taking back a yes
+
+Under the chats, the Messages page lists **Waiting for an answer**: matches you said yes to that the other person has not answered. **Take back** asks you to confirm, then withdraws your yes. The other person stops seeing the match and you won't be matched with them again. If they answered in the meantime, the app says so instead.
+
+## Reporting and the admin page
+
+The match screen has a **Report** link: pick a reason, and the report goes to the admins and the match is skipped. Admins get an **Admin** tab in the bottom bar (and a link on Profile), leading to `/admin`: users (suspend, unsuspend, verify email, give or remove admin rights), reports (resolve, suspend the reported user) and an activity log. The server decides who is an admin; anyone else who opens `/admin` is sent Home. In the demo, `demo@do-re.test` is the admin. On the local backend it is `admin@do-re.test` (password `demo-pass-1`).
+
+## Notifications
+
+Profile has a **Notifications** switch, and Home offers once to turn it on. With it on, this browser shows a system notification for a new match, a match the other person accepted, and a chat message, even when the tab is closed (`src/notifications/`, `public/sw.js`). It needs the real backend: the demo has no server to send them, and says so. On iPhone and iPad it works only after adding the app to the Home Screen. Logging out turns notifications off for that browser.
 
 ## Demo accounts
 

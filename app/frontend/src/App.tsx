@@ -5,6 +5,8 @@
 import type { Api } from './api/client';
 import { ApiProvider } from './api/ApiContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { PendingMatchesProvider } from './matches/PendingMatches';
+import { PushBridge } from './notifications/PushBridge';
 import { PlayerProvider } from './player/PlayerContext';
 import { createSpotifyPlayer } from './player/spotifyPlayer';
 import type { PlayerFactory } from './player/types';
@@ -25,7 +27,10 @@ export function App({ api, initialUserId, createPlayer = createSpotifyPlayer }: 
       <PlayerProvider factory={createPlayer}>
         <SessionProvider initialUserId={initialUserId}>
           <ErrorBoundary>
-            <AppRoutes />
+            <PushBridge />
+            <PendingMatchesProvider>
+              <AppRoutes />
+            </PendingMatchesProvider>
           </ErrorBoundary>
         </SessionProvider>
       </PlayerProvider>

@@ -70,15 +70,16 @@ describe('frontend client against the backend: accounts', () => {
   it('R_ACC_01_R_ACC_02_R_ACC_08_R_SEC_01_R_SEC_02_R_SEC_03_signUpVerifyAndLogIn', async () => {
     const world = makeWorld();
     const { api } = clientFor(world);
-    expect(await api.account.createAccount('nope', 'a', 'a')).toBe('INVALID_EMAIL');
-    expect(await api.account.createAccount('ada@example.com', 'a', 'b')).toBe('PASSWORDS_DO_NOT_MATCH');
-    expect(await api.account.createAccount('ada@example.com', 'right', 'right')).toBe('PENDING_VERIFICATION');
-    expect(await api.account.createAccount('ada@example.com', 'right', 'right')).toBe('EMAIL_IN_USE');
+    expect(await api.account.createAccount('nope', 'long-enough', 'long-enough')).toBe('INVALID_EMAIL');
+    expect(await codeOf(api.account.createAccount('ada@example.com', 'short', 'short'))).toBe('BAD_REQUEST'); // under 8 characters
+    expect(await api.account.createAccount('ada@example.com', 'long-enough', 'different')).toBe('PASSWORDS_DO_NOT_MATCH');
+    expect(await api.account.createAccount('ada@example.com', 'right-pw', 'right-pw')).toBe('PENDING_VERIFICATION');
+    expect(await api.account.createAccount('ada@example.com', 'right-pw', 'right-pw')).toBe('EMAIL_IN_USE');
 
     // the popup's poll, before and after the link is opened
     expect(await api.account.isVerified('ada@example.com')).toBe(false);
     expect(await api.account.isVerified('nobody@example.com')).toBe(false);
-    expect(await api.account.login('ada@example.com', 'right')).toEqual({ result: 'NOT_VERIFIED' });
+    expect(await api.account.login('ada@example.com', 'right-pw')).toEqual({ result: 'NOT_VERIFIED' });
     const link = linkIn(world.email.sent[0]!);
     expect(world.email.sent[0]!.text).toContain('https://app.example/verify?userId='); // the /verify page's URL
     expect(await api.account.confirmEmail(link.userId, 'wrong')).toBe(false);
@@ -86,15 +87,16 @@ describe('frontend client against the backend: accounts', () => {
     expect(await api.account.isVerified('ada@example.com')).toBe(true);
 
     expect(await api.account.login('ada@example.com', 'wrong')).toEqual({ result: 'WRONG_PASSWORD' });
-    expect(await api.account.login('nobody@example.com', 'right')).toEqual({ result: 'NO_ACCOUNT' });
-    const login = await api.account.login('ada@example.com', 'right');
+    // an unknown email looks exactly like a wrong password (OPEN-16)
+    expect(await api.account.login('nobody@example.com', 'right-pw')).toEqual({ result: 'WRONG_PASSWORD' });
+    const login = await api.account.login('ada@example.com', 'right-pw');
     expect(login).toEqual({ result: 'SUCCESS', userId: link.userId, token: expect.any(String) });
   });
 
   it('R_ACC_09_profilesUsernamesAndPictures', async () => {
     const world = makeWorld();
     const ada = await join(world, 'ada@example.com');
-    expect(await ada.api.account.getProfile(ada.userId)).toEqual({ userId: ada.userId, username: '', profilePictureUrl: null });
+    expect(await ada.api.account.getProfile(ada.userId)).toEqual({ userId: ada.userId, username: '', profilePictureUrl: null, isAdmin: false });
     await ada.api.account.updateUsername(ada.userId, 'Ada');
     await ada.api.account.updateProfilePicture(ada.userId, new Blob([JPEG], { type: 'image/jpeg' }));
     const profile = await ada.api.account.getProfile(ada.userId);
@@ -200,6 +202,24 @@ describe('frontend client against the backend: matches and chat', () => {
     expect((await amy.api.chats.getChatLog(amy.userId)).map((chat) => chat.chatId)).toEqual([chatId]);
   });
 
+  it('R_HOME_21_R_HOME_22_aYesStillWaitingIsListedAndCanBeTakenBack', async () => {
+    const { amy, bob, match } = await matched();
+    expect(await amy.api.matches.getOutgoingMatches(amy.userId)).toEqual([]);
+    await amy.api.matches.confirmMatch(match, amy.userId);
+    expect(await amy.api.matches.getOutgoingMatches(amy.userId)).toEqual([
+      { match, otherUser: { userId: bob.userId, username: 'Bob', profilePictureUrl: null } },
+    ]);
+    expect(await bob.api.matches.getOutgoingMatches(bob.userId)).toEqual([]);
+    await amy.api.matches.retractMatch(match, amy.userId);
+    expect(await amy.api.matches.getOutgoingMatches(amy.userId)).toEqual([]);
+    expect(await bob.api.matches.getPendingMatches(bob.userId)).toEqual([]);
+    expect(await bob.api.matches.confirmMatch(match, bob.userId)).toBeNull();
+    // the client sees a refusal as an ApiError with status 409
+    const refused = await amy.api.matches.retractMatch(match, amy.userId).catch((error) => error);
+    expect(refused).toBeInstanceOf(ApiError);
+    expect((refused as ApiError).status).toBe(409);
+  });
+
   it('R_HOME_21_R_HOME_22_aDeclineIsFinal', async () => {
     const { amy, bob, match } = await matched();
     await amy.api.matches.declineMatch(match, amy.userId);
@@ -279,3 +299,72 @@ describe('frontend client against the backend: matches and chat', () => {
     expect(await bob.api.chats.getChatLog(bob.userId)).toEqual([]);
   });
 });
+
+describe('frontend client against the backend: push notifications', () => {
+  it('getsTheKeySavesAndRemovesASubscription', async () => {
+    const world = makeWorld();
+    const ada = await join(world, 'ada@example.com');
+    expect(await ada.api.push.getPublicKey()).toBe('BTestVapidPublicKey');
+    const subscription = {
+      endpoint: 'https://updates.push.services.mozilla.com/wpush/v2/abc',
+      keys: { p256dh: `B${'k'.repeat(86)}`, auth: 'a'.repeat(22) },
+    };
+    await ada.api.push.saveSubscription(subscription);
+    expect(await world.services.subscriptions.list(ada.userId)).toEqual([subscription]);
+    await ada.api.push.removeSubscription(subscription.endpoint);
+    expect(await world.services.subscriptions.list(ada.userId)).toEqual([]);
+    expect(await codeOf(ada.api.push.saveSubscription({ ...subscription, endpoint: 'https://evil.example/x' }))).toBe('BAD_REQUEST');
+  });
+});
+
+describe('frontend client against the backend: reports and the admin panel (OPEN-18)', () => {
+  it('reportsAProfileThenAnAdminReviewsSuspendsAndResolves', async () => {
+    const world = makeWorld(); // root admin: root@example.com
+    const root = await join(world, 'root@example.com');
+    const amy = await join(world, 'amy@example.com');
+    const bob = await join(world, 'bob@example.com');
+    const taste = new TasteVector(new Array<number>(FEATURE_COUNT).fill(0.4));
+    await world.services.matchModel.updateUser(amy.userId, taste, world.clock.now);
+    await world.services.matchModel.updateUser(bob.userId, taste, world.clock.now);
+    const match = (await world.services.matchModel.findMatch(amy.userId, world.clock.now))!;
+
+    // the client learns who is an admin from its own profile
+    expect((await root.api.account.getProfile(root.userId)).isAdmin).toBe(true);
+    expect((await amy.api.account.getProfile(amy.userId)).isAdmin).toBe(false);
+    expect(await codeOf(amy.api.admin.listUsers(amy.userId))).toBe('NOT_ADMIN');
+
+    await amy.api.matches.reportProfile(match, amy.userId, 'FAKE_ACCOUNT', 'stock photo');
+    expect(await bob.api.matches.getPendingMatches(bob.userId)).toEqual([]); // the match was declined
+
+    const reports = await root.api.admin.listReports(root.userId);
+    expect(reports).toMatchObject([
+      { reason: 'FAKE_ACCOUNT', details: 'stock photo', source: 'MATCH', resolved: null, reporter: { email: 'amy@example.com' }, reported: { email: 'bob@example.com' } },
+    ]);
+    const users = await root.api.admin.listUsers(root.userId);
+    expect(users.map((u) => u.email)).toEqual(['root@example.com', 'amy@example.com', 'bob@example.com']);
+    expect(users.find((u) => u.userId === bob.userId)).toMatchObject({ openReports: 1, active: true, admin: false, rootAdmin: false, suspended: null });
+    expect(users[0]).toMatchObject({ rootAdmin: true });
+
+    await root.api.admin.suspend(root.userId, bob.userId, 'fake account');
+    expect(await codeOf(bob.api.songs.getCurrentSong(bob.userId))).toBe('UNAUTHENTICATED'); // logged out at once
+    expect(await bob.api.account.login('bob@example.com', 'pw-12345')).toEqual({ result: 'SUSPENDED' });
+    await root.api.admin.resolveReport(root.userId, reports[0]!.reportId, 'suspended');
+    expect((await root.api.admin.listReports(root.userId))[0]!.resolved).toMatchObject({ by: root.userId, note: 'suspended' });
+
+    await root.api.admin.unsuspend(root.userId, bob.userId);
+    expect((await bob.api.account.login('bob@example.com', 'pw-12345')).result).toBe('SUCCESS');
+    await root.api.admin.setAdmin(root.userId, amy.userId, true);
+    expect((await amy.api.admin.listUsers(amy.userId)).find((u) => u.userId === amy.userId)!.admin).toBe(true);
+    expect(await codeOf(amy.api.admin.suspend(amy.userId, root.userId, 'x'))).toBe('BAD_REQUEST'); // root admins are protected
+
+    await amy.api.account.createAccount('new@example.com', 'new-pw-123', 'new-pw-123');
+    const fresh = (await amy.api.admin.listUsers(amy.userId)).find((u) => u.email === 'new@example.com')!;
+    expect(fresh.active).toBe(false);
+    await amy.api.admin.verify(amy.userId, fresh.userId);
+    expect((await amy.api.account.login('new@example.com', 'new-pw-123')).result).toBe('SUCCESS');
+
+    const log = await root.api.admin.auditLog(root.userId);
+    expect(log.map((e) => e.action)).toEqual(['VERIFY', 'GRANT_ADMIN', 'UNSUSPEND', 'RESOLVE_REPORT', 'SUSPEND']);
+  });
+});
+

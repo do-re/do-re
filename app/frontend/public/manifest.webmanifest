@@ -1,0 +1,10 @@
+{
+  "name": "Do~Re",
+  "short_name": "Do~Re",
+  "description": "Swipe on songs, match with people who share your taste, and chat.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [{ "src": "/logo.png", "sizes": "256x256", "type": "image/png", "purpose": "any" }]
+}

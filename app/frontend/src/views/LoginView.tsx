@@ -10,6 +10,7 @@
  */
 import { useRef, useState, type FormEvent } from 'react';
 import { Link, Navigate, useLocation } from 'react-router-dom';
+import { ApiError } from '../api/apiErrors';
 import { useApi } from '../api/ApiContext';
 import type { LoginResult } from '../api/types';
 import { Modal } from '../components/Modal';
@@ -20,7 +21,7 @@ import './auth.css';
 import { readAuthNavState, safeRedirect, validateLogin, type FieldErrors } from './authLogic';
 
 /** A popup to show: the result that caused it, or a failure to reach the server. */
-type Popup = Exclude<LoginResult, 'SUCCESS'> | 'NETWORK';
+type Popup = Exclude<LoginResult, 'SUCCESS'> | 'NETWORK' | 'LOCKED';
 
 /**
  * The /login page.
@@ -79,12 +80,13 @@ export function LoginView() {
       const response = await api.account.login(trimmed, password);
       if (response.result === 'SUCCESS') {
         // The re-render sees the session and redirects (the <Navigate> above).
-        session.logIn(response.userId, response.token);
+        session.logIn(response.userId, response.token, response.isAdmin === true);
         return;
       }
       showError(response.result, trimmed);
-    } catch {
-      showError('NETWORK', trimmed);
+    } catch (error) {
+      // The server locks an email for a while after too many failed attempts.
+      showError(error instanceof ApiError && error.code === 'RATE_LIMITED' ? 'LOCKED' : 'NETWORK', trimmed);
     } finally {
       setPending(false);
     }
@@ -182,6 +184,14 @@ const POPUP_TEXT: Record<Popup, { title: string; body: (email: string) => string
   NO_ACCOUNT: {
     title: 'Email or password is incorrect',
     body: () => 'Check your email and password and try again, or create an account.',
+  },
+  SUSPENDED: {
+    title: 'Account suspended',
+    body: () => 'This account has been suspended, so you cannot log in. If you think this is a mistake, contact the Do~Re team.',
+  },
+  LOCKED: {
+    title: 'Too many attempts',
+    body: () => 'There were too many failed attempts to log in with this email. Wait 15 minutes, then try again.',
   },
   NETWORK: {
     title: "Couldn't log in",

@@ -1,0 +1,130 @@
+/* AdminView (OPEN-18). Mobile-first: users and reports are cards, not a wide table. */
+
+.admin {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+
+.admin h1 {
+  margin: 8px 0 0;
+  font-size: 1.5rem;
+}
+
+.admin__tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid rgb(127 127 127 / 0.4);
+}
+
+.admin__tabs button {
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.admin__tabs button[aria-selected='true'] {
+  border-bottom-color: #2563eb;
+  font-weight: 600;
+}
+
+.admin__search {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 0.9rem;
+}
+
+.admin__search input {
+  padding: 8px 10px;
+  border: 1px solid rgb(127 127 127 / 0.6);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.admin__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin__card {
+  padding: 10px 12px;
+  border: 1px solid rgb(127 127 127 / 0.35);
+  border-radius: 10px;
+}
+
+.admin__card p {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.admin__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin__meta {
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.admin__quote {
+  font-style: italic;
+}
+
+.admin__tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgb(37 99 235 / 0.15);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.admin__tag--warn {
+  background: rgb(185 28 28 / 0.15);
+}
+
+.admin__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.admin__button {
+  padding: 6px 12px;
+  border: 1px solid rgb(127 127 127 / 0.6);
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.admin__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.admin__button--danger {
+  border-color: #b91c1c;
+  color: #b91c1c;
+}
+
+.admin__problem {
+  margin: 0;
+  color: #b91c1c;
+}

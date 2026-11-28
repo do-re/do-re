@@ -188,6 +188,34 @@ export class MockMatchModel {
   }
 
   /**
+   * WEB: matches userId said yes to that the other user has not answered.
+   * Requires: none.
+   * Effects: none.
+   * @returns those matches, best first
+   */
+  getOutgoingMatches(userId: string): Match[] {
+    return [...this.matches.values()]
+      .filter((s) => involves(s.match, userId) && s.confirmed.has(userId) && s.confirmed.size === 1 && s.declined.size === 0)
+      .map((s) => s.match)
+      .sort((a, b) => b.compatibilityPercent - a.compatibilityPercent);
+  }
+
+  /**
+   * WEB: takes back userId's confirmation, which then counts as a decline.
+   * Requires: the match exists and userId is one of its users.
+   * Effects: if userId confirmed and the other user has not answered, userId's answer becomes a
+   *          decline; otherwise nothing changes.
+   * @returns true iff the confirmation was taken back
+   */
+  retract(matchId: string, userId: string): boolean {
+    const state = this.requireState(matchId, userId);
+    if (!state.confirmed.has(userId) || state.confirmed.size !== 1 || state.declined.size > 0) return false;
+    state.confirmed.delete(userId);
+    state.declined.add(userId);
+    return true;
+  }
+
+  /**
    * Requires: the match exists, and both of its users have confirmed.
    * Effects: records the match's one chat.
    */

@@ -6,7 +6,7 @@ export type Area = 'account' | 'song' | 'match' | 'chat';
 
 /** The route prefixes of docs/project/api.md that each area's function serves. */
 export const AREA_PREFIXES: Readonly<Record<Area, readonly string[]>> = {
-  account: ['/api/auth', '/api/accounts', '/api/users'],
+  account: ['/api/auth', '/api/accounts', '/api/users', '/api/push', '/api/admin'],
   song: ['/api/songs'],
   match: ['/api/matches'],
   chat: ['/api/chats', '/api/presence'],
@@ -35,7 +35,7 @@ export function lambdaHandler(
       : { status: 404, body: { error: { code: 'NOT_FOUND', message: 'There is nothing at that address.' } } };
     return {
       statusCode: response.status,
-      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+      headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
       body: response.body === undefined ? '' : JSON.stringify(response.body),
     };
   };

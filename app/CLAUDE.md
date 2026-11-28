@@ -16,6 +16,7 @@ Read when relevant:
 - `architecture-stubs-v2.java` — method signatures and specs: the behaviour spec for the React views and for the TypeScript backend in `backend/src`.
 - `docs/project/api.md` — the HTTP API contract between the frontend client and the backend.
 - `backend/README.md` — backend install, test, deploy, table layout, and differences from the stubs.
+- `docs/project/security.md` — the security audit: what was fixed, what was checked, what is left.
 - `docs/assets/ui-sketch.png` (screen sketches), `docs/assets/logo.png` (team logo).
 
 ## Precedence when sources disagree
@@ -67,11 +68,11 @@ Each component has one owner (team plan). Edit freely in the component you were 
 
 - **Frontend:** React + TypeScript single-page app on S3 + CloudFront. Spotify embed player for audio. Tests: Vitest + React Testing Library.
 - **Backend:** TypeScript on AWS Lambda (Node.js 22) + DynamoDB; Amazon SES for verification emails; S3 for profile pictures. Code in `backend/`, deployed with AWS SAM (`backend/template.yaml`). (Changed from Java on 2026-11-23, OPEN-11.)
-- **Data:** song library = Chosic playlist CSV export at `backend/data/songs.csv`, bundled into the Lambda and loaded at start.
+- **Data:** starting song library at `backend/data/songs.csv` (150 real tracks), bundled into the Lambda and loaded at start. While users swipe the backend also pulls songs near their taste from ReccoBeats (audio features, recommendations) and Spotify (covers) and stores them in DynamoDB (OPEN-6, changed 2026-11-26).
 
 Commands (after `npm install` in the folder):
 - Build: frontend `npm run build` in `frontend/`; backend `npm run build` in `backend/` (`sam build`; needs `data/songs.csv`).
-- Run server: there is no local server. Deploy with `npm run deploy` in `backend/` (see `backend/README.md`); the frontend runs on its in-memory demo until `VITE_API_BASE_URL` is set.
+- Run server: `npm run dev` in `backend/` runs the backend locally on `http://localhost:8787/api` with data in memory; deploy with `npm run deploy` (see `backend/README.md`). The frontend uses whichever API `VITE_API_BASE_URL` in `frontend/.env.local` names, and its in-memory demo when that is unset.
 - Run client: `npm run dev` in `frontend/`
 - Tests + coverage: frontend `npm run coverage` in `frontend/`; backend `npm test` in `backend/` (one command each, course C-REL-3). The backend command needs Docker for DynamoDB Local and fails below branch 85%, lines 90%, functions 100%; `npm run test:unit` skips the Docker tests and coverage.
 

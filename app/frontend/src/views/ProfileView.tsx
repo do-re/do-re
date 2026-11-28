@@ -9,6 +9,7 @@
  * and the session).
  */
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { useApi } from '../api/ApiContext';
 import { displayName } from '../api/profile';
 import type { UserProfile } from '../api/types';
@@ -17,7 +18,9 @@ import { Credits } from '../components/Credits';
 import { TasteVectorPanel } from '../components/DevPanels';
 import { Modal } from '../components/Modal';
 import { TextField } from '../components/TextField';
+import { PATHS } from '../paths';
 import { useSession } from '../session/SessionContext';
+import { disablePush, usePushNotifications } from '../notifications/push';
 import { useDevMode } from '../settings/devMode';
 import './auth.css';
 import './profile.css';
@@ -35,6 +38,7 @@ export function ProfileView() {
   const session = useSession();
   const userId = session.userId!;
   const [devMode, setDevMode] = useDevMode();
+  const push = usePushNotifications(api.push);
 
   const [load, setLoad] = useState<LoadState>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
@@ -214,6 +218,40 @@ export function ProfileView() {
             </button>
           </form>
 
+          {load.profile.isAdmin === true && (
+            <p className="profile__admin">
+              <Link to={PATHS.admin}>Admin page</Link>: manage users and reports.
+            </p>
+          )}
+
+          <div className="dev-toggle">
+            <div>
+              <label htmlFor="notifications">Notifications</label>
+              <p id="notifications-hint">
+                {push.state === 'unsupported'
+                  ? "This browser can't show notifications. On iPhone or iPad, add Do~Re to your Home Screen first."
+                  : push.state === 'blocked'
+                    ? "Notifications are blocked for this site. Allow them in your browser's site settings, then reload."
+                    : 'Hear about new matches and messages, even when Do~Re is closed.'}
+              </p>
+              {push.error !== null && (
+                <p className="profile__problem" role="alert">
+                  {push.error}
+                </p>
+              )}
+            </div>
+            <input
+              id="notifications"
+              className="dev-toggle__switch"
+              type="checkbox"
+              role="switch"
+              checked={push.state === 'on'}
+              disabled={push.busy || push.state === null || push.state === 'unsupported' || push.state === 'blocked'}
+              onChange={(event) => void push.setEnabled(event.target.checked)}
+              aria-describedby="notifications-hint"
+            />
+          </div>
+
           <div className="dev-toggle">
             <div>
               <label htmlFor="developer-mode">Developer mode</label>
@@ -234,7 +272,25 @@ export function ProfileView() {
 
           <Credits />
 
-          <button type="button" className="profile__logout" onClick={session.logOut}>
+          <button
+            type="button"
+            className="profile__logout"
+            onClick={() => {
+              // End the session on the server too, so a copied token stops working. The request
+              // is sent with the token before the session is cleared below; logging out never
+              // waits on it or fails because of it.
+              void api.account.logout().catch(() => undefined);
+              // Stop this browser's notifications first, so the next person to log in here
+              // doesn't get this account's. Logging out never waits on it for long or fails.
+              if (push.state !== 'on') {
+                session.logOut();
+                return;
+              }
+              void disablePush(api.push)
+                .catch(() => undefined)
+                .finally(session.logOut);
+            }}
+          >
             Log out
           </button>
         </>
@@ -263,7 +319,7 @@ export function ProfileView() {
                 </p>
               ) : (
                 <p id="profile-picture-hint" className="profile__hint">
-                  JPG, PNG or another image, up to 5 MB.
+                  JPG, PNG or another image, up to 4 MB.
                 </p>
               )}
             </div>

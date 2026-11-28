@@ -47,7 +47,8 @@ describe('MockBackend construction', () => {
 describe('MockBackend accounts', () => {
   it('R_ACC_04 login partitions: success, wrong password, no account, not verified', async () => {
     const b = new MockBackend();
-    const success = { result: 'SUCCESS', userId: DEMO.userId, token: 'mock-session-u-demo' };
+    // demo is the demo backend's root admin (OPEN-18), so its login says so
+    const success = { result: 'SUCCESS', userId: DEMO.userId, token: 'mock-session-u-demo', isAdmin: true };
     expect(await b.login(DEMO.email, DEMO.password)).toEqual(success);
     expect(await b.login(`  ${DEMO.email} `, DEMO.password)).toEqual(success);
     expect(await b.login(DEMO.email, 'nope')).toEqual({ result: 'WRONG_PASSWORD' });
@@ -108,7 +109,8 @@ describe('MockBackend accounts', () => {
 
   it('getProfile and updateUsername', async () => {
     const b = new MockBackend();
-    expect(await b.getProfile(DEMO.userId)).toEqual({ userId: DEMO.userId, username: 'demo', profilePictureUrl: null });
+    // demo is the demo backend's root admin (OPEN-18), so its profile says so
+    expect(await b.getProfile(DEMO.userId)).toEqual({ userId: DEMO.userId, username: 'demo', profilePictureUrl: null, isAdmin: true });
     await b.updateUsername(DEMO.userId, '  dj ');
     expect((await b.getProfile(DEMO.userId)).username).toBe('dj');
     await expect(b.updateUsername(DEMO.userId, '   ')).rejects.toThrow();

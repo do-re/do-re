@@ -21,9 +21,11 @@ Labels: text without a label is the golden document. `[ADDED]` = filled in from 
 | Frontend (views, ViewController, client half of controllers) | **React + TypeScript** single-page app, built to static files on **S3 + CloudFront** | Each view is a React component; ViewController is the app's routing/state; talks to the backend over HTTPS |
 | Backend (server half of controllers, all models) | **TypeScript on AWS Lambda** (Node.js 22; changed from Java on 2026-11-23, OPEN-11), behind an API Gateway HTTP API that CloudFront serves under `/api/*` | One handler per controller area: account, song, match, chat. Code in `backend/`; API contract in `docs/project/api.md` |
 | Data | **DynamoDB** (one table, provisioned mode, small capacity, to stay in the free tier) | Accounts, sessions, taste vectors + history, active song, matches, chats, heartbeats. Key layout: `backend/README.md` |
-| Song library | Chosic CSV export bundled with the backend | Loaded when a Lambda starts |
+| Song library | Starting library: CSV file bundled with the backend, loaded when a Lambda starts. Plus songs pulled while users swipe from **ReccoBeats** (audio features, recommendations) and **Spotify** (covers), stored in DynamoDB | Changed 2026-11-26, OPEN-6. Details: `backend/README.md` |
 | Email | **Amazon SES** | Production access: Felix (OPEN-7) |
 | Profile pictures | **S3** bucket, served by CloudFront under `/pictures/*` | The account stores only the picture's URL (api.md Q-2) |
+| Admin panel and reports | Server: `AdminController`, `ReportController`, `ReportModel` in `backend/src/admin/`. Client: `AdminView` (`/admin`) and a Report dialog on MatchView | Added 2026-11-27 (OPEN-18). Not in the golden document or the stubs |
+| Push notifications | **SNS** topic for match and chat events, a **notifier Lambda** that sends Web Push to browsers, signing key in **SSM Parameter Store** | Added 2026-11-26 (OPEN-17). The golden backend structure lists "push notifications" under Felix. Client: service worker in `frontend/public/sw.js` |
 | Audio + album art | **Spotify embed player** in the browser | Plays `spotifyUri`; previews for logged-out listeners |
 
 **Consequences for implementation (read before writing a model):**

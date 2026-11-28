@@ -28,6 +28,12 @@ Claude Code: **do not silently resolve `OPEN` or `ASSUMED` items.** If a task to
 - **Playback and album art:** use the Spotify embed player (iFrame API: load a track URI; play/pause/seek; `playback_update` events give position and duration). Listeners not logged in to Spotify get a preview clip, which fits R-HOME-13.
 - Chosic's terms page link is broken (404), so there are no published terms to check. Credit Chosic and Spotify in the README.
 
+**Changed 2026-11-26 (Felix) — needs team confirmation:** songs are no longer limited to a hand-exported Chosic file. Chosic refuses automated requests, so there was no way to get real songs without a manual export, and nobody had made one.
+- **Audio features now come from ReccoBeats** (reccobeats.com), a free API with no key that returns the same 7 features (0 to 1) for Spotify tracks by track ID, and recommendations. Covers and playback are still Spotify's.
+- **The app pulls songs while users swipe** (`SongSuggestionModel.pullSuggestions`): recommendations near the user's taste are fetched, stored in DynamoDB and suggested before the starting library. The starting library (`backend/data/songs.csv`, 150 real tracks pulled the same way) covers new users and outages.
+- A Chosic export can still be used to build the starting library (`npm run library`).
+- **Open points:** ReccoBeats' numbers are its own analysis, not guaranteed equal to Chosic's or Spotify's; neither service publishes rate limits or terms for this use (Spotify's cover endpoint answered 429 after about 200 lookups in a few minutes); the course's "data set read from a file" (C-TECH-2) is still met by the starting library. Credit ReccoBeats and Spotify in the README.
+
 **OPEN-11 · Hosting and client technology** — DECIDED
 **Decision:** AWS for both. Frontend is **React + TypeScript**, built to static files on S3 + CloudFront; backend is on AWS Lambda + DynamoDB (see `architecture.md` → Deployment). The Java stubs are the behaviour spec for the React components.
 **Changed 2026-11-23 (Felix): the backend is TypeScript (Node.js Lambda), not Java.** The course allows any language (C-TECH-5). Reasons: one language and test runner across client and server, so the frontend's HTTP client can be tested directly against the backend (`backend/test/contract.test.ts`), and fast cold starts. The Java stubs are now the behaviour spec for the backend too; `backend/README.md` lists where the implementation differs. **The rest of the team has not confirmed this change yet.**
@@ -84,8 +90,20 @@ Working assumption: email only (golden). Suggest rewording R-ACC-03/07 to "email
 **OPEN-10 · Bottom bar on every view** — ASSUMED
 Working assumption: hidden on LoginView and CreateAccountView, shown everywhere else.
 
-**OPEN-16 · The API tells callers which emails have accounts** — ASSUMED (new, 2026-11-24)
-Three public routes reveal whether an email has an account: login (`WRONG_PASSWORD` vs `NO_ACCOUNT`, as in the stubs), sign-up (`EMAIL_IN_USE`, required by the CreateAccountView spec) and `verification-status` (notes-for-felix F-5, api.md Q-12). Working assumption: keep all three as the frontend was built against them; the login page already shows one message for both login failures, and `verification-status` answers `false` for an unknown email. Closing this fully means a pending-signup ID for the poll and a single login failure result, which changes the client.
+**OPEN-16 · The API tells callers which emails have accounts** — ASSUMED (2026-11-24; narrowed by the security audit of 2026-11-27)
+Login no longer does: the API answers an unknown email exactly like a wrong password (`WRONG_PASSWORD`) and takes the same time, although the stubs' `AccountController.login` still distinguishes `NO_ACCOUNT` on the server. Two public routes still reveal it: sign-up (`EMAIL_IN_USE`, required by the CreateAccountView spec) and `verification-status` (notes-for-felix F-5, api.md Q-12). Working assumption: keep those two as the frontend was built against them. Closing them means a pending-signup ID for the poll and a neutral answer for every sign-up, which changes the client. See `security.md`.
+
+**OPEN-17 · Push notifications** — ASSUMED (new, 2026-11-26, Felix)
+The golden backend structure mentions "push notifications" but no requirement covers them, and the stubs have nothing for them. Added as an extra: browser notifications for a match offered by another user, a completed match, and a chat message (api.md "Push notifications"). Working assumptions to confirm with the team: permission is asked from a Notifications switch on Profile and a one-time hint on Home; notification text shows the sender's username and an 80-character message preview; a browser belongs to the last account that turned notifications on in it, and logging out turns them off there. It adds UI to ProfileView and HomeView (Gavin) and a `PushApi` to the client (Yara). No requirement depends on it, so it can be switched off by deploying without a key.
+
+**OPEN-18 · Admin panel and profile reports** — ASSUMED (new, 2026-11-27, Felix)
+Not in the golden architecture, the stubs or the requirements; added so that the reports from R-CHAT-14 to 16 and the fake-account policy in R-ACC-10 can actually be acted on (api.md "Reports and admin"). Working assumptions to confirm with the team:
+- Root admins come from a deploy setting; admins can give admin rights to others; every admin action is logged.
+- Admins can suspend and unsuspend, verify an email by hand (OPEN-7), and resolve reports. Accounts cannot be deleted.
+- A profile can be reported from the match screen (with a reason; it also skips the match), and the chat report button also files a report. Only someone you were matched with can be reported.
+- `LoginResult` gains `SUSPENDED`, a change to a shared enum (LoginView shows a popup for it).
+- New UI on MatchView, LoginView and ProfileView (Gavin) and a new `/admin` route (Yara's router).
+- Admins see every user's email on the admin page.
 
 **OPEN-15 · Bounded Taste Vector update** — ASSUMED
 Working assumption: `t ← clamp(t + w·(f − t), 0, 1)` with |w| ≤ MAX_STEP. This is the golden "add features × weight" idea, but bounded, which makes the "won't explode" proof possible.

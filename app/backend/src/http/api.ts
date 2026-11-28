@@ -1,5 +1,6 @@
 import { z, ZodError } from 'zod';
-import { AppError, badRequest, matchNotFound, unauthorized } from '../errors';
+import { REPORT_REASONS } from '../admin/ReportModel';
+import { AppError, badRequest, matchNotFound, unauthorized, userNotFound } from '../errors';
 import { type ChatMessage, otherUser, type Song } from '../model/types';
 import type { Services } from '../services';
 
@@ -51,13 +52,26 @@ class Created {
 // Request body shapes (docs/project/api.md). The server is the authority: every body is
 // checked here, whatever the client validated.
 const text = (max: number) => z.string().max(max);
-const signupBody = z.object({ email: text(254), password: text(1024), confirmPassword: text(1024) });
+/** Shortest password a new account may have (NIST SP 800-63B's minimum; notes-for-felix F-10). */
+export const MIN_PASSWORD_LENGTH = 8;
+const signupBody = z.object({
+  email: text(254),
+  password: text(1024).min(MIN_PASSWORD_LENGTH, `Use a password of at least ${MIN_PASSWORD_LENGTH} characters.`),
+  confirmPassword: text(1024),
+});
 const loginBody = z.object({ email: text(254), password: text(1024) });
 const confirmBody = z.object({ userId: text(100), token: text(200) });
 const emailBody = z.object({ email: text(254) });
 const usernameBody = z.object({ username: text(200) });
 const feedbackBody = z.object({ swipe: z.enum(['LIKE', 'SKIP']), secondsListened: z.number() });
 const messageBody = z.object({ text: z.string() });
+const subscriptionBody = z.object({ endpoint: text(1000), keys: z.object({ p256dh: text(200), auth: text(200) }) });
+const endpointBody = z.object({ endpoint: text(1000) });
+// A user cannot pick REPORTED_IN_CHAT: that reason belongs to the chat screen's report button.
+const reportBody = z.object({ reason: z.enum(REPORT_REASONS).exclude(['REPORTED_IN_CHAT']), details: z.string().optional() });
+const reasonBody = z.object({ reason: z.string() });
+const adminFlagBody = z.object({ admin: z.boolean() });
+const noteBody = z.object({ note: z.string().optional() }).optional();
 
 const iso = (time: number) => new Date(time).toISOString();
 
@@ -85,7 +99,7 @@ export function createApi(
   services: Services,
   log: (line: string) => void = console.error,
 ): (request: HttpRequest) => Promise<HttpResponse> {
-  const { accounts, sessions, songs, matches, matchModel, chats, clock } = services;
+  const { accounts, sessions, songs, matches, matchModel, chats, clock, subscriptions, admin, reports } = services;
 
   const messageDto = (message: ChatMessage) => ({
     messageId: String(message.seq),
@@ -113,10 +127,13 @@ export function createApi(
         const { email, password } = loginBody.parse(json());
         const result = await accounts.login(email, password);
         if (result !== 'SUCCESS') {
-          return { result };
+          // An unknown email and a wrong password get the same answer, so the login form cannot
+          // be used to find out which emails have accounts (OPEN-16).
+          return { result: result === 'NO_ACCOUNT' ? 'WRONG_PASSWORD' : result };
         }
         const userId = await accounts.getUserId(email);
-        return { result, userId, token: await sessions.createSession(userId) };
+        // isAdmin only decides whether the client shows the Admin tab; every admin route checks again.
+        return { result, userId, token: await sessions.createSession(userId), isAdmin: await admin.isAdmin(userId) };
       },
     },
     // Not in the stubs: ends the session on the server, so a copied token stops working.
@@ -152,7 +169,25 @@ export function createApi(
     {
       method: 'GET',
       path: '/users/:userId',
-      handle: ({ userId, params }) => accounts.getProfile(params.userId === 'me' ? userId : params.userId!),
+      handle: async ({ userId, params }) => {
+        const wanted = params.userId === 'me' ? userId : params.userId!;
+        // A profile is shown only to its owner and to people matched with them; to anyone
+        // else the account does not exist.
+        if (wanted !== userId && !(await matchModel.hasMatch(userId, wanted))) {
+          throw userNotFound();
+        }
+        const profile = await accounts.getProfile(wanted);
+        // Only your own profile says whether you are an admin (it decides whether the Admin link shows).
+        return wanted === userId ? { ...profile, isAdmin: await admin.isAdmin(userId) } : profile;
+      },
+    },
+    {
+      method: 'POST',
+      path: '/users/:userId/report',
+      handle: ({ userId, params, json }) => {
+        const { reason, details } = reportBody.parse(json());
+        return reports.reportProfile(userId, params.userId!, reason, details);
+      },
     },
     {
       method: 'PATCH',
@@ -199,6 +234,16 @@ export function createApi(
       method: 'GET',
       path: '/matches/pending',
       handle: async ({ userId }) => ({ matches: await matches.getPendingMatches(userId) }),
+    },
+    {
+      method: 'GET',
+      path: '/matches/outgoing',
+      handle: async ({ userId }) => ({ matches: await matches.getOutgoingMatches(userId) }),
+    },
+    {
+      method: 'POST',
+      path: '/matches/:matchId/retract',
+      handle: ({ userId, params }) => matches.retractMatch(params.matchId!, userId),
     },
     {
       method: 'GET',
@@ -281,6 +326,51 @@ export function createApi(
       handle: ({ userId, params }) => chats.reportChat(userId, params.chatId!),
     }),
     { method: 'POST', path: '/presence/heartbeat', handle: ({ userId }) => chats.recordHeartbeat(userId, clock()) },
+
+    // ------------------------------------------------------------ push notifications
+    {
+      method: 'GET',
+      path: '/push/public-key',
+      handle: async () => {
+        if (services.vapidPublicKey === undefined) {
+          throw new AppError(503, 'PUSH_UNAVAILABLE', 'Notifications are not set up on this server.');
+        }
+        return { publicKey: services.vapidPublicKey };
+      },
+    },
+    {
+      method: 'PUT',
+      path: '/push/subscription',
+      handle: ({ userId, json }) => subscriptions.save(userId, subscriptionBody.parse(json())),
+    },
+    {
+      method: 'DELETE',
+      path: '/push/subscription',
+      handle: ({ userId, json }) => subscriptions.remove(userId, endpointBody.parse(json()).endpoint),
+    },
+
+    // ------------------------------------------------------------ admin panel (OPEN-18)
+    // AdminController checks that the caller is an admin in every method: 403 NOT_ADMIN otherwise.
+    { method: 'GET', path: '/admin/users', handle: async ({ userId }) => ({ users: await admin.listUsers(userId) }) },
+    {
+      method: 'POST',
+      path: '/admin/users/:userId/suspend',
+      handle: ({ userId, params, json }) => admin.suspend(userId, params.userId!, reasonBody.parse(json()).reason),
+    },
+    { method: 'POST', path: '/admin/users/:userId/unsuspend', handle: ({ userId, params }) => admin.unsuspend(userId, params.userId!) },
+    { method: 'POST', path: '/admin/users/:userId/verify', handle: ({ userId, params }) => admin.verify(userId, params.userId!) },
+    {
+      method: 'POST',
+      path: '/admin/users/:userId/admin',
+      handle: ({ userId, params, json }) => admin.setAdmin(userId, params.userId!, adminFlagBody.parse(json()).admin),
+    },
+    { method: 'GET', path: '/admin/reports', handle: async ({ userId }) => ({ reports: await admin.listReports(userId) }) },
+    {
+      method: 'POST',
+      path: '/admin/reports/:reportId/resolve',
+      handle: ({ userId, params, json }) => admin.resolveReport(userId, params.reportId!, noteBody.parse(json())?.note),
+    },
+    { method: 'GET', path: '/admin/audit', handle: async ({ userId }) => ({ entries: await admin.auditLog(userId) }) },
   ];
 
   return async (request) => {
@@ -341,8 +431,12 @@ function findRoute(
     const params: Record<string, string> = {};
     const matches = pattern.every((part, i) => {
       if (part.startsWith(':') && segments[i] !== '') {
-        params[part.slice(1)] = decodeURIComponent(segments[i]!);
-        return true;
+        try {
+          params[part.slice(1)] = decodeURIComponent(segments[i]!);
+          return true;
+        } catch {
+          return false; // a malformed %-escape matches no route
+        }
       }
       return part === segments[i];
     });

@@ -5,6 +5,8 @@
  */
 const USER_KEY = 'do-re.userId';
 const TOKEN_KEY = 'do-re.token';
+/** Present ("yes") iff the logged-in user may see the Admin tab (OPEN-18). Only a display hint. */
+const ADMIN_KEY = 'do-re.admin';
 
 /** Fired on window when the server rejects the session. */
 export const SESSION_EXPIRED_EVENT = 'do-re:session-expired';
@@ -39,12 +41,27 @@ export function readSessionToken(): string | null {
 
 /**
  * Requires: none.
- * Effects: remembers userId and token for this browser tab.
+ * Effects: none.
+ * @returns true iff the stored session belongs to an admin
  */
-export function storeSession(userId: string, token?: string): void {
+export function readStoredAdmin(): boolean {
+  try {
+    return sessionStorage.getItem(ADMIN_KEY) === 'yes';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Requires: none.
+ * Effects: remembers userId, token and whether the user is an admin, for this browser tab.
+ */
+export function storeSession(userId: string, token?: string, isAdmin = false): void {
   tokenInMemory = token ?? null;
   try {
     sessionStorage.setItem(USER_KEY, userId);
+    if (isAdmin) sessionStorage.setItem(ADMIN_KEY, 'yes');
+    else sessionStorage.removeItem(ADMIN_KEY);
     if (token !== undefined) sessionStorage.setItem(TOKEN_KEY, token);
   } catch {
     // Storage blocked: the session still works until the tab reloads.
@@ -60,6 +77,7 @@ export function clearStoredSession(): void {
   try {
     sessionStorage.removeItem(USER_KEY);
     sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(ADMIN_KEY);
   } catch {
     // Storage blocked: nothing was stored.
   }

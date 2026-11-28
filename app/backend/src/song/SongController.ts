@@ -1,7 +1,8 @@
 import type { Clock } from '../deps';
 import { badRequest, songNotActive } from '../errors';
 import type { MatchModel } from '../match/MatchModel';
-import type { Feedback, Song, SwipeResult, UndoResult } from '../model/types';
+import { type Feedback, otherUser, type Song, type SwipeResult, type UndoResult } from '../model/types';
+import type { EventPublisher } from '../notify/events';
 import type { TasteVector } from '../model/vectors';
 import { type Item, type Key, type Table, updateItem } from '../store/Table';
 import type { MusicTasteModel } from './MusicTasteModel';
@@ -47,6 +48,7 @@ export class SongController {
     private readonly matchModel: MatchModel,
     private readonly table: Table,
     private readonly clock: Clock,
+    private readonly publisher?: EventPublisher,
   ) {}
 
   /**
@@ -63,17 +65,21 @@ export class SongController {
    * Satisfies: R-HOME-03.
    *
    * Requires: userId belongs to a logged-in user.
-   * Effects: if no song is active, makes the next suggestion the active song.
+   * Effects: if no song is active, pulls new songs from the music platform if the user is
+   *          running low (SongSuggestionModel.pullSuggestions) and makes the next suggestion
+   *          the active song.
    * @returns the song currently active for this user
    */
   async getCurrentSong(userId: string): Promise<Song> {
     return updateItem(this.table, stateKey(userId), async (current) => {
       const state = stateOf(current);
-      const active = state.active === undefined ? undefined : this.suggestionModel.getSong(state.active);
+      const active = state.active === undefined ? undefined : await this.suggestionModel.getSong(state.active);
       if (active !== undefined) {
         return { result: active };
       }
-      const next = await this.suggestionModel.nextSuggestion(userId, await this.tasteModel.getTasteVector(userId));
+      const taste = await this.tasteModel.getTasteVector(userId);
+      await this.suggestionModel.pullSuggestions(userId, taste);
+      const next = await this.suggestionModel.nextSuggestion(userId, taste);
       return { attrs: { ...state, active: next.id, liked: false }, result: next };
     });
   }
@@ -104,13 +110,17 @@ export class SongController {
    * Requires: userId belongs to a logged-in user; songId is the user's active song;
    *           secondsListened is finite and >= 0 (values above the song's duration count as
    *           the whole song).
-   * Effects: makes the next suggestion the active song, increments the user's swipe count
+   * Effects: pulls new songs from the music platform if the user is running low
+   *          (SongSuggestionModel.pullSuggestions); makes the next suggestion the active
+   *          song, increments the user's swipe count
    *          and remembers the swipe for undo (atomically, see the class comment; only the
    *          last UNDO_LIMIT swipes are kept); sends the listen to MusicTasteModel
    *          with feedback LIKE if swipe is LIKE or the song was marked liked, SKIP otherwise
    *          (so a song counts once); sends the updated Taste Vector and the current time to
    *          MatchModel.updateUser.
    * @param swipe LIKE (swipe right or right arrow) or SKIP (swipe left or left arrow)
+   *          If a match is offered and a publisher was given, announces it so the other
+   *          user of the match can be notified.
    * @returns the new active song, and MatchModel.findMatch(userId, now) if
    *          MatchModel.shouldOfferMatch(userId, swipe count) is true (otherwise undefined)
    * @throws AppError 400 if secondsListened is invalid; 409 SONG_NOT_ACTIVE if songId is not
@@ -120,9 +130,12 @@ export class SongController {
     if (!Number.isFinite(secondsListened) || secondsListened < 0) {
       throw badRequest('secondsListened must be a number of seconds, 0 or more.');
     }
+    // Top up from the music platform first, outside the atomic claim below, so a slow or
+    // failed platform request can never repeat or block the claim.
+    await this.suggestionModel.pullSuggestions(userId, await this.tasteModel.getTasteVector(userId));
     const claimed = await updateItem(this.table, stateKey(userId), async (current) => {
       const state = stateOf(current);
-      const song = state.active === songId ? this.suggestionModel.getSong(songId) : undefined;
+      const song = state.active === songId ? await this.suggestionModel.getSong(songId) : undefined;
       if (song === undefined) {
         throw songNotActive();
       }
@@ -143,7 +156,17 @@ export class SongController {
     });
     await this.matchModel.updateUser(userId, await this.tasteModel.getTasteVector(userId), now);
     const offer = await this.matchModel.shouldOfferMatch(userId, claimed.swipeCount);
-    return { nextSong: claimed.next, offeredMatch: offer ? await this.matchModel.findMatch(userId, now) : undefined };
+    const offeredMatch = offer ? await this.matchModel.findMatch(userId, now) : undefined;
+    if (offeredMatch !== undefined) {
+      // The swiper sees the match in this response; the other user is told by notification.
+      await this.publisher?.publish({
+        type: 'MATCH_OFFERED',
+        toUserId: otherUser(offeredMatch, userId),
+        fromUserId: userId,
+        matchId: offeredMatch.matchId,
+      });
+    }
+    return { nextSong: claimed.next, offeredMatch };
   }
 
   /**
@@ -170,10 +193,10 @@ export class SongController {
    * @returns the restored song, or undefined if there is nothing to undo
    */
   async undoLastSwipe(userId: string): Promise<UndoResult | undefined> {
-    const undone = await updateItem(this.table, stateKey(userId), (current) => {
+    const undone = await updateItem(this.table, stateKey(userId), async (current) => {
       const state = stateOf(current);
       const last = state.undo.at(-1);
-      const song = last === undefined ? undefined : this.suggestionModel.getSong(last.songId);
+      const song = last === undefined ? undefined : await this.suggestionModel.getSong(last.songId);
       if (last === undefined || song === undefined) {
         return { result: undefined };
       }
@@ -187,7 +210,7 @@ export class SongController {
       return undefined;
     }
     await this.tasteModel.undoLastListen(userId);
-    const left = undone.left === undefined ? undefined : this.suggestionModel.getSong(undone.left);
+    const left = undone.left === undefined ? undefined : await this.suggestionModel.getSong(undone.left);
     if (left !== undefined) {
       await this.suggestionModel.returnSuggestion(userId, left);
     }

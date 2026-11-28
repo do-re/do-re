@@ -7,7 +7,7 @@ import { SongLibrary } from '../src/song/SongLibrary';
 import { SongController } from '../src/song/SongController';
 import { SongSuggestionModel } from '../src/song/SongSuggestionModel';
 import { MemoryTable } from '../src/store/MemoryTable';
-import { makeLibrary, makeWorld, song, statusOf } from './helpers';
+import { catalogOf, makeLibrary, makeWorld, song, statusOf } from './helpers';
 
 const seven = (v: number) => new Array<number>(FEATURE_COUNT).fill(v);
 const listen = (s: Song, feedback: Feedback, secondsListened = s.durationSeconds): ListeningEvent => ({
@@ -80,7 +80,7 @@ describe('MusicTasteModel', () => {
   // boundary: 100th vs 101st history entry
   it('R_HOME_17_historyKeepsTheLatest100SongsMostRecentFirst', async () => {
     const library = new SongLibrary(Array.from({ length: 101 }, (_, i) => song(`h${String(i).padStart(3, '0')}`)));
-    const model = new MusicTasteModel(new MemoryTable(), library);
+    const model = new MusicTasteModel(new MemoryTable(), catalogOf(library));
     for (const s of library.all().slice(0, 100)) {
       await model.recordListen('u', listen(s, 'LIKE'));
     }
@@ -114,7 +114,7 @@ describe('MusicTasteModel', () => {
     });
     await fc.assert(
       fc.asyncProperty(fc.array(event, { minLength: 1, maxLength: 40 }), async (events) => {
-        const model = new MusicTasteModel(new MemoryTable(), makeLibrary());
+        const model = new MusicTasteModel(new MemoryTable(), catalogOf(makeLibrary()));
         for (const [i, e] of events.entries()) {
           const s = song(`p${i}`, e.features, 100);
           const w = model.computeWeight(listen(s, e.feedback, e.fraction * 100));
@@ -140,13 +140,13 @@ describe('MusicTasteModel', () => {
 describe('SongSuggestionModel', () => {
   const taste = (v: number) => new TasteVector(seven(v));
 
-  it('R_HOME_01_holdsTheLibraryAndNeedsMoreThanCacheSizeSongs', () => {
+  it('R_HOME_01_holdsTheLibraryAndNeedsMoreThanCacheSizeSongs', async () => {
     const { services, library } = makeWorld();
     expect(services.suggestionModel.getLibrary()).toBe(library.all());
-    expect(services.suggestionModel.getSong('s01')!.id).toBe('s01');
-    expect(services.suggestionModel.getSong('nope')).toBeUndefined();
-    expect(() => new SongSuggestionModel(makeLibrary(SongSuggestionModel.CACHE_SIZE), new MemoryTable())).toThrow(RangeError);
-    expect(() => new SongSuggestionModel(makeLibrary(SongSuggestionModel.CACHE_SIZE + 1), new MemoryTable())).not.toThrow();
+    expect((await services.suggestionModel.getSong('s01'))!.id).toBe('s01');
+    expect(await services.suggestionModel.getSong('nope')).toBeUndefined();
+    expect(() => new SongSuggestionModel(catalogOf(makeLibrary(SongSuggestionModel.CACHE_SIZE)), new MemoryTable())).toThrow(RangeError);
+    expect(() => new SongSuggestionModel(catalogOf(makeLibrary(SongSuggestionModel.CACHE_SIZE + 1)), new MemoryTable())).not.toThrow();
   });
 
   // spec: up to count songs, none excluded, closest first, ties by ID
@@ -186,7 +186,7 @@ describe('SongSuggestionModel', () => {
 
   // boundary: the smallest allowed library (CACHE_SIZE + 1 songs)
   it('R_HOME_15_theSmallestLibraryStillAlwaysHasANextSong', async () => {
-    const model = new SongSuggestionModel(makeLibrary(6), new MemoryTable());
+    const model = new SongSuggestionModel(catalogOf(makeLibrary(6)), new MemoryTable());
     await model.preloadCache('u', taste(0.2));
     let previous = '';
     for (let i = 0; i < 25; i++) {
@@ -201,7 +201,7 @@ describe('SongSuggestionModel', () => {
   // spec: cached songs that left the library are dropped
   it('skips cached songs that are no longer in the library', async () => {
     const table = new MemoryTable();
-    const model = new SongSuggestionModel(makeLibrary(12), table);
+    const model = new SongSuggestionModel(catalogOf(makeLibrary(12), table), table);
     const item = { pk: 'USER#u', sk: 'SUGGEST', version: 1, cache: ['gone', 's07', 'gone-too'], recent: [] };
     await table.write([{ op: 'put', item, expect: 'any' }]);
     expect((await model.nextSuggestion('u', taste(0))).id).toBe('s07');
@@ -404,7 +404,7 @@ describe('undo (api.md Q-14)', () => {
   // boundary: undoing the listen that pushed the 100th-oldest entry out brings it back
   it('undoLastListen brings back the history entry the listen pushed out', async () => {
     const library = new SongLibrary(Array.from({ length: 101 }, (_, i) => song(`h${String(i).padStart(3, '0')}`)));
-    const model = new MusicTasteModel(new MemoryTable(), library);
+    const model = new MusicTasteModel(new MemoryTable(), catalogOf(library));
     for (const s of library.all()) {
       await model.recordListen('u', listen(s, 'LIKE'));
     }

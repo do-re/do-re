@@ -1,4 +1,6 @@
-import type { Clock } from '../deps';
+import type { ReportModel } from '../admin/ReportModel';
+import { type Clock, otherOfPair } from '../deps';
+import { type EventPublisher, previewOf } from '../notify/events';
 import type { Chat, ChatMessage, ChatSummary } from '../model/types';
 import { type Key, type Table, updateItem } from '../store/Table';
 import type { ChatModel } from './ChatModel';
@@ -28,6 +30,8 @@ export class ChatController {
     private readonly chatModel: ChatModel,
     private readonly table: Table,
     private readonly clock: Clock,
+    private readonly publisher?: EventPublisher,
+    private readonly reports?: ReportModel,
   ) {}
 
   /**
@@ -45,11 +49,20 @@ export class ChatController {
    * Satisfies: R-CHAT-13 (server side).
    *
    * Requires: chatId names an existing chat; senderId is a participant; text is non-empty.
-   * Effects: stores the message in ChatModel, time-stamped with the current time.
+   * Effects: stores the message in ChatModel, time-stamped with the current time, and, if a
+   *          publisher was given, announces it so the other participant can be notified.
    * @returns the stored message
    */
-  sendMessage(chatId: string, senderId: string, text: string): Promise<ChatMessage> {
-    return this.chatModel.addMessage(chatId, { senderId, text, timestamp: this.clock() });
+  async sendMessage(chatId: string, senderId: string, text: string): Promise<ChatMessage> {
+    const message = await this.chatModel.addMessage(chatId, { senderId, text, timestamp: this.clock() });
+    await this.publisher?.publish({
+      type: 'MESSAGE',
+      toUserId: otherOfPair(chatId, senderId),
+      fromUserId: senderId,
+      chatId,
+      preview: previewOf(message.text),
+    });
+    return message;
   }
 
   /**
@@ -103,11 +116,20 @@ export class ChatController {
    * Satisfies: R-CHAT-15, R-CHAT-16.
    *
    * Requires: chatId names an existing chat; userId is a participant.
-   * Effects: flags the chat in ChatModel and removes it from userId's message log.
+   * Effects: flags the chat in ChatModel and removes it from userId's message log. If a
+   *          ReportModel was given, also files a report about the other participant, so
+   *          admins see it (OPEN-18); a repeated report changes nothing.
    */
   async reportChat(userId: string, chatId: string): Promise<void> {
     await this.chatModel.flagChat(chatId, userId);
     await this.chatModel.removeChatForUser(chatId, userId);
+    await this.reports?.file({
+      reporterId: userId,
+      reportedId: otherOfPair(chatId, userId),
+      source: 'CHAT',
+      reason: 'REPORTED_IN_CHAT',
+      contextId: chatId,
+    });
   }
 
   /**

@@ -1,5 +1,5 @@
 import { pairId, type RandomSource } from '../deps';
-import { badRequest, matchNotFound, notParticipant, userNotFound } from '../errors';
+import { AppError, badRequest, matchNotFound, notParticipant, userNotFound } from '../errors';
 import type { Match } from '../model/types';
 import { FEATURE_COUNT, TasteVector } from '../model/vectors';
 import { attributesOf, type Item, type Key, type Table, updateItem } from '../store/Table';
@@ -72,6 +72,31 @@ export class MatchModel {
   }
 
   /**
+   * Takes a user out of matching (used when an account is suspended).
+   * Effects: the user is in no leaderboard, so findMatch never returns them, until
+   *          updateUser is called for them again. Existing matches are not changed.
+   */
+  async removeUser(userId: string): Promise<void> {
+    await this.table.write([{ op: 'delete', key: poolKey(userId), expect: 'any' }]);
+  }
+
+  /**
+   * Effects: none.
+   * @returns each leaderboard user's last-active time, by user ID
+   */
+  async lastActiveTimes(): Promise<Map<string, number>> {
+    return new Map((await this.table.query(POOL)).map(entryOf).map((entry) => [entry.userId, entry.lastActive]));
+  }
+
+  /**
+   * Effects: none.
+   * @returns true iff a match between the two users was ever proposed (whatever became of it)
+   */
+  async hasMatch(userA: string, userB: string): Promise<boolean> {
+    return (await this.table.get(pointerKey(userA, userB))) !== undefined;
+  }
+
+  /**
    * Requires: metric is an integer with 0 <= metric < FEATURE_COUNT; limit > 0.
    * Effects: none.
    * @returns up to limit user IDs, highest value for that metric first (ties by user ID)
@@ -108,6 +133,53 @@ export class MatchModel {
       })
       .map(matchOf)
       .sort((a, b) => b.compatibilityPercent - a.compatibilityPercent || (a.matchId < b.matchId ? -1 : 1));
+  }
+
+  /**
+   * Matches the user said yes to that the other user has not answered yet. Added to stubs v2
+   * for the "Waiting for an answer" list on the Messages page.
+   *
+   * Requires: userId belongs to an existing account.
+   * Effects: none.
+   * @returns every match involving userId that userId confirmed and the other user has
+   *          neither confirmed nor declined, highest compatibility first
+   */
+  async getOutgoingMatches(userId: string): Promise<Match[]> {
+    const pointers = await this.table.query(`USER#${userId}`, { prefix: 'MATCH#' });
+    const records = await Promise.all(pointers.map((pointer) => this.table.get(matchKey(pointer.matchId as string))));
+    return records
+      .filter((record) => record !== undefined)
+      .filter((record) => {
+        const [mine, theirs] = sidesOf(record, userId);
+        return record[mine] === true && record[theirs] === undefined;
+      })
+      .map(matchOf)
+      .sort((a, b) => b.compatibilityPercent - a.compatibilityPercent || (a.matchId < b.matchId ? -1 : 1));
+  }
+
+  /**
+   * Takes back a confirmation the other user has not answered yet. Added to stubs v2. This is
+   * the one exception to "a user's first decision stands".
+   *
+   * Requires: matchId names an existing match; userId is one of its users, has confirmed it,
+   *           and the other user has not answered.
+   * Effects: userId's decision becomes a decline, atomically: the match is no longer
+   *          outgoing for userId or pending for the other user, and the pair is never
+   *          proposed again. If the other user confirms at the same moment, exactly one of
+   *          the two happens first: either this call applies and their confirmation completes
+   *          nothing, or their confirmation completes the match and this call fails with 409.
+   * @throws AppError 404 if there is no such match; 403 if userId is not one of its users;
+   *         409 NOT_RETRACTABLE if userId has not confirmed it or the other user has answered
+   */
+  async retractConfirmation(matchId: string, userId: string): Promise<void> {
+    await updateItem(this.table, matchKey(matchId), (current) => {
+      const record = requireRecord(current);
+      const [mine, theirs] = sidesOf(record, userId);
+      if (record[mine] !== true || record[theirs] !== undefined) {
+        throw new AppError(409, 'NOT_RETRACTABLE', 'This match can no longer be taken back.');
+      }
+      return { attrs: { ...attributesOf(record), [mine]: false }, result: undefined };
+    });
   }
 
   /**

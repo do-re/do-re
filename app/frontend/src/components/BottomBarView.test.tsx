@@ -52,3 +52,38 @@ describe('ViewController chat routes', () => {
     expect(screen.getByRole('heading', { name: 'Home' })).toBeInTheDocument();
   });
 });
+
+describe('BottomBarView admin tab (OPEN-18)', () => {
+  it('adds an Admin tab after Profile once an admin logs in, and it opens the admin page', async () => {
+    renderChatApp(seededApi(), '/login', null);
+    await userEvent.type(screen.getByLabelText('Email'), 'demo@do-re.test'); // the demo backend's admin
+    await userEvent.type(screen.getByLabelText('Password'), 'demo-pass-1');
+    await userEvent.click(screen.getByRole('button', { name: /log in/i }));
+    await screen.findByRole('navigation', { name: 'Main' });
+    const admin = await bar().findByRole('link', { name: 'Admin' });
+    expect(bar().getAllByRole('link').map((l) => l.textContent)).toEqual(['Home', 'Messages', 'Profile', 'Admin']);
+    await userEvent.click(admin);
+    expect(await screen.findByRole('heading', { name: 'Admin' })).toBeInTheDocument();
+    const current = bar().getAllByRole('link').filter((l) => l.getAttribute('aria-current') === 'page');
+    expect(current.map((l) => l.textContent)).toEqual(['Admin']);
+  });
+
+  it('keeps the Admin tab after a refresh, and drops it at logout', async () => {
+    sessionStorage.setItem('do-re.admin', 'yes'); // what an admin's login stored
+    renderChatApp(seededApi(), '/profile');
+    expect(bar().getAllByRole('link').map((l) => l.textContent)).toEqual(['Home', 'Messages', 'Profile', 'Admin']);
+    await userEvent.click(await screen.findByRole('button', { name: 'Log out' }));
+    expect(await screen.findByRole('heading', { name: 'Log in' })).toBeInTheDocument();
+    expect(sessionStorage.getItem('do-re.admin')).toBeNull();
+  });
+
+  it('security_showsNoAdminTabToOtherUsers', async () => {
+    renderChatApp(seededApi(), '/login', null);
+    await userEvent.type(screen.getByLabelText('Email'), 'melody@do-re.test');
+    await userEvent.type(screen.getByLabelText('Password'), 'demo-pass-1');
+    await userEvent.click(screen.getByRole('button', { name: /log in/i }));
+    await screen.findByRole('heading', { name: 'Home' });
+    expect(bar().getAllByRole('link').map((l) => l.textContent)).toEqual(['Home', 'Messages', 'Profile']);
+    expect(sessionStorage.getItem('do-re.admin')).toBeNull();
+  });
+});

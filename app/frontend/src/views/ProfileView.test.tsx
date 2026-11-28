@@ -117,7 +117,7 @@ describe('ProfileView picture popup', () => {
     expect(input).toHaveAttribute('type', 'file');
     expect(input).toHaveAttribute('accept', 'image/*');
     expect(input).toHaveFocus();
-    expect(input).toHaveAccessibleDescription(/up to 5 MB/);
+    expect(input).toHaveAccessibleDescription(/up to 4 MB/);
   });
 
   it('uploads an image, closes the popup, shows the new picture and returns focus', async () => {

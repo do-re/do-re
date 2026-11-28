@@ -14,7 +14,8 @@
  * Rep invariant: every userId in active, liked and swipes belongs to an account; each model's own
  * rep invariant holds.
  */
-import type { AccountApi, Api, MatchApi, SongApi } from './client';
+import { ApiError } from './apiErrors';
+import type { AccountApi, AdminApi, Api, MatchApi, SongApi } from './client';
 import { MockBots } from './mockBots';
 import { MockChatBackend } from './mockChat';
 import { MockMatchModel } from './mockMatch';
@@ -22,6 +23,11 @@ import { SEED_ACCOUNTS, SEED_BOTS, SEED_CHATS, SEED_PENDING_MATCH, SEED_SONGS, s
 import { MockSuggestionModel, type SongOrder } from './mockSuggestions';
 import { MockTasteModel, UNDO_LIMIT } from './mockTaste';
 import type {
+  AdminReport,
+  AdminUser,
+  AuditEntry,
+  OutgoingMatch,
+  ReportReason,
   CreateAccountResult,
   Feedback,
   LoginResponse,
@@ -31,6 +37,7 @@ import type {
   UndoResult,
   UserProfile,
 } from './types';
+import { MAX_SUSPEND_REASON } from './types';
 import { isWellFormedEmail } from './validation';
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -44,7 +51,14 @@ interface MockAccount {
   pictureUrl: string | null;
   /** The unused token in the account's verification email, if any. */
   verificationToken: string | null;
+  /** Admin panel (OPEN-18). */
+  admin?: boolean;
+  suspended?: { at: number; by: string; reason: string } | null;
+  createdAt?: number;
 }
+
+/** The demo's root admin (the real server takes its root admins from configuration). */
+export const MOCK_ROOT_ADMIN_EMAIL = 'demo@do-re.test';
 
 /** Tuning for the mock. */
 export interface MockOptions {
@@ -76,7 +90,7 @@ export interface RecordedListen {
   readonly secondsListened: number;
 }
 
-export class MockBackend implements AccountApi, SongApi, MatchApi {
+export class MockBackend implements AccountApi, SongApi, MatchApi, AdminApi {
   private readonly accounts = new Map<string, MockAccount>();
   private readonly active = new Map<string, Song>();
   private readonly liked = new Set<string>();
@@ -87,6 +101,9 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
   private readonly random: () => number;
   private readonly now: () => number;
   private nextId = 1;
+  /** Reports about profiles, and the admin activity log, newest last. */
+  private readonly reports: AdminReport[] = [];
+  private readonly audit: AuditEntry[] = [];
 
   /** Every listen recorded by submitFeedback, oldest first. */
   readonly listens: RecordedListen[] = [];
@@ -194,8 +211,15 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
     const account = this.accounts.get(email.trim());
     if (account === undefined) return { result: 'NO_ACCOUNT' };
     if (account.password !== password) return { result: 'WRONG_PASSWORD' };
+    if (account.suspended) return { result: 'SUSPENDED' };
     if (!account.verified) return { result: 'NOT_VERIFIED' };
-    return { result: 'SUCCESS', userId: account.userId, token: `mock-session-${account.userId}` };
+    const session = { result: 'SUCCESS' as const, userId: account.userId, token: `mock-session-${account.userId}` };
+    return this.isAdminAccount(account) ? { ...session, isAdmin: true } : session;
+  }
+
+  async logout(): Promise<void> {
+    // The demo's sessions live only in the browser tab, so there is nothing to end.
+    await this.delay();
   }
 
   async createAccount(email: string, password: string, confirmPassword: string): Promise<CreateAccountResult> {
@@ -211,6 +235,7 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
       verified: false,
       username: '', // a blank account (R-ACC-09), so a user's email is never shown to others
       pictureUrl: null,
+      createdAt: this.now(),
       verificationToken: this.newId('verify'),
     });
     this.checkRep();
@@ -237,7 +262,9 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
 
   async getProfile(userId: string): Promise<UserProfile> {
     await this.delay();
-    return toProfile(this.accountById(userId));
+    const account = this.accountById(userId);
+    // The real server adds isAdmin only to the caller's own profile; the demo can't tell who asks.
+    return this.isAdminAccount(account) ? { ...toProfile(account), isAdmin: true } : toProfile(account);
   }
 
   async updateUsername(userId: string, newUsername: string): Promise<void> {
@@ -367,6 +394,144 @@ export class MockBackend implements AccountApi, SongApi, MatchApi {
     this.checkRep();
   }
 
+  async getOutgoingMatches(userId: string): Promise<OutgoingMatch[]> {
+    await this.delay();
+    return this.matchModel
+      .getOutgoingMatches(userId)
+      .map((match) => ({ match, otherUser: toProfile(this.accountById(otherUser(match, userId))) }));
+  }
+
+  async retractMatch(match: Match, userId: string): Promise<void> {
+    await this.delay();
+    if (!this.matchModel.retract(match.matchId, userId)) {
+      throw new ApiError('INTERNAL', 'This match can no longer be taken back.', 409);
+    }
+    this.checkRep();
+  }
+
+  async reportProfile(match: Match, userId: string, reason: ReportReason, details: string): Promise<void> {
+    await this.delay();
+    if (!involves(match, userId)) throw new ApiError('NOT_PARTICIPANT', 'You can only report someone you were matched with.', 403);
+    this.fileReport(userId, otherUser(match, userId), reason, details);
+    this.applyDecision(match.matchId, userId, false);
+    this.checkRep();
+  }
+
+  /**
+   * Test / demo helper: files a report without a match.
+   * Requires: both IDs belong to accounts.
+   * Effects: stores the report unless reporterId already has an open one about reportedId.
+   */
+  fileReport(reporterId: string, reportedId: string, reason: AdminReport['reason'], details = '', source: AdminReport['source'] = 'MATCH'): void {
+    const reportId = `${reportedId}.${reporterId}`;
+    const existing = this.reports.findIndex((report) => report.reportId === reportId);
+    if (existing >= 0 && this.reports[existing].resolved === null) return;
+    if (existing >= 0) this.reports.splice(existing, 1);
+    const person = (id: string) => {
+      const account = this.accountById(id);
+      return { userId: id, username: account.username, email: account.email };
+    };
+    this.reports.push({ reportId, reporter: person(reporterId), reported: person(reportedId), source, reason, details: details.trim(), createdAt: this.now(), resolved: null });
+  }
+
+  // ----- AdminApi (OPEN-18). Same rules as the server's AdminController. -----
+
+  private isAdminAccount(account: MockAccount): boolean {
+    return !account.suspended && (account.admin === true || account.email === MOCK_ROOT_ADMIN_EMAIL);
+  }
+
+  private requireAdmin(adminId: string): void {
+    const account = [...this.accounts.values()].find((a) => a.userId === adminId);
+    if (account === undefined || !this.isAdminAccount(account)) throw new ApiError('NOT_ADMIN', 'This page is for admins.', 403);
+  }
+
+  /** The target of a suspension or role change: someone else, and not the root admin. */
+  private otherAccount(adminId: string, userId: string, verb: string): MockAccount {
+    if (userId === adminId) throw new ApiError('BAD_REQUEST', `You cannot ${verb} your own account.`, 400);
+    const account = this.accountById(userId);
+    if (account.email === MOCK_ROOT_ADMIN_EMAIL) throw new ApiError('BAD_REQUEST', `You cannot ${verb} a root admin.`, 400);
+    return account;
+  }
+
+  private log(adminId: string, action: AuditEntry['action'], targetId: string, detail = ''): void {
+    this.audit.push({ at: this.now(), adminId, action, targetId, detail });
+  }
+
+  async listUsers(adminId: string): Promise<AdminUser[]> {
+    await this.delay();
+    this.requireAdmin(adminId);
+    return [...this.accounts.values()].map((account) => ({
+      userId: account.userId,
+      email: account.email,
+      username: account.username,
+      active: account.verified,
+      admin: account.admin === true,
+      rootAdmin: account.email === MOCK_ROOT_ADMIN_EMAIL,
+      suspended: account.suspended ?? null,
+      createdAt: account.createdAt ?? 0,
+      lastActiveAt: null,
+      openReports: this.reports.filter((report) => report.reported.userId === account.userId && report.resolved === null).length,
+    }));
+  }
+
+  async suspend(adminId: string, userId: string, reason: string): Promise<void> {
+    await this.delay();
+    this.requireAdmin(adminId);
+    const why = reason.trim();
+    if (why === '' || why.length > MAX_SUSPEND_REASON) {
+      throw new ApiError('BAD_REQUEST', `Give a reason of 1 to ${MAX_SUSPEND_REASON} characters.`, 400);
+    }
+    const account = this.otherAccount(adminId, userId, 'suspend');
+    account.suspended ??= { at: this.now(), by: adminId, reason: why };
+    this.log(adminId, 'SUSPEND', userId, why);
+  }
+
+  async unsuspend(adminId: string, userId: string): Promise<void> {
+    await this.delay();
+    this.requireAdmin(adminId);
+    this.accountById(userId).suspended = null;
+    this.log(adminId, 'UNSUSPEND', userId);
+  }
+
+  async verify(adminId: string, userId: string): Promise<void> {
+    await this.delay();
+    this.requireAdmin(adminId);
+    const account = this.accountById(userId);
+    account.verified = true;
+    account.verificationToken = null;
+    this.log(adminId, 'VERIFY', userId);
+  }
+
+  async setAdmin(adminId: string, userId: string, admin: boolean): Promise<void> {
+    await this.delay();
+    this.requireAdmin(adminId);
+    this.otherAccount(adminId, userId, 'change the admin rights of').admin = admin;
+    this.log(adminId, admin ? 'GRANT_ADMIN' : 'REVOKE_ADMIN', userId);
+  }
+
+  async listReports(adminId: string): Promise<AdminReport[]> {
+    await this.delay();
+    this.requireAdmin(adminId);
+    return [...this.reports].sort((a, b) => Number(a.resolved !== null) - Number(b.resolved !== null) || b.createdAt - a.createdAt);
+  }
+
+  async resolveReport(adminId: string, reportId: string, note: string): Promise<void> {
+    await this.delay();
+    this.requireAdmin(adminId);
+    const index = this.reports.findIndex((report) => report.reportId === reportId);
+    if (index < 0) throw new ApiError('INTERNAL', 'That report does not exist.', 404);
+    if (this.reports[index].resolved === null) {
+      this.reports[index] = { ...this.reports[index], resolved: { by: adminId, at: this.now(), note: note.trim() } };
+    }
+    this.log(adminId, 'RESOLVE_REPORT', reportId, note.trim());
+  }
+
+  async auditLog(adminId: string): Promise<AuditEntry[]> {
+    await this.delay();
+    this.requireAdmin(adminId);
+    return [...this.audit].reverse().slice(0, 100);
+  }
+
   // ----- helpers -----
 
   /**
@@ -471,6 +636,14 @@ export function createMockApi(options: MockOptions = {}): Api & { backend: MockB
     songs: backend,
     matches: backend,
     chats: backend.chatBackend,
+    admin: backend,
+    // The demo has no server to send pushes, so the Notifications switch reports that it can't
+    // be turned on here.
+    push: {
+      getPublicKey: () => Promise.reject(new ApiError('INTERNAL', "Notifications need the real server. The demo can't send them.", 503)),
+      saveSubscription: () => Promise.resolve(),
+      removeSubscription: () => Promise.resolve(),
+    },
     demo: { verificationLinkFor: (email) => backend.verificationLinkFor(email) },
     backend,
   };

@@ -100,15 +100,15 @@ What the backend does today for each open item above. Written by Claude while bu
 |---|---|
 | F-1 | Login returns `{ result: 'SUCCESS', userId, token }`. The token is an opaque session token, sent as `Authorization: Bearer`, valid 7 days (api.md Q-1). |
 | F-2 | `profilePictureUrl` as proposed: pictures in S3, served by CloudFront. |
-| F-3 | Raw body upload. Limit 4 MB, types PNG/JPEG/GIF/WebP checked from the file contents. **`MAX_PICTURE_BYTES` in `profileLogic.ts` should be 4 MB.** |
+| F-3 | Raw body upload. Limit 4 MB, types PNG/JPEG/GIF/WebP checked from the file contents. `MAX_PICTURE_BYTES` in `profileLogic.ts` was changed to 4 MB to match (2026-11-25). |
 | F-4 | `getMatch` implemented (`MatchController.getMatch`, `MatchModel.getPendingMatch`): returns the match only while it awaits the caller. Gavin owns MatchModel; Claude implemented it and MatchController on this branch. |
 | F-5 | `verification-status` implemented as the frontend calls it. The enumeration concern is recorded as OPEN-16, not solved. |
 | F-6 | Answered in api.md: one base URL (`<app origin>/api`), error format as drafted, CORS for `localhost:5173` on the API's direct URL. |
 | F-7 | Nobody needs to trigger `onAppOpened`: `GET /songs/current` fills the cache when empty. |
-| F-8 | **Still needed from Felix:** the Chosic CSV export at `backend/data/songs.csv`. The backend cannot be deployed without it, and the mock still has placeholder tracks. |
+| F-8 | **Resolved differently (2026-11-26):** `backend/data/songs.csv` now holds 150 real tracks pulled from ReccoBeats and Spotify, and the backend pulls more while users swipe (OPEN-6). The mock's `mockSeed.ts` still has placeholder tracks. Earlier note: the Chosic CSV export (a manual step on chosic.com). `npm run library -- <export>` in `backend/` then builds `backend/data/songs.csv`, checking each track and fetching covers from Spotify. The backend cannot be deployed without it, and the mock still has placeholder tracks. Real Spotify playback through the app was checked on 2026-11-25 with real track IDs. |
 | F-9 | Same regex and the same check order on the server. |
-| F-10 | Unchanged: a password only has to be non-empty. **Felix to decide** whether to require 8 characters. |
+| F-10 | **Changed by the security audit (2026-11-27):** new passwords need at least 8 characters, checked by the server and by the sign-up form (`MIN_PASSWORD_LENGTH`). The server answers `400 BAD_REQUEST` with a message rather than a new `CreateAccountResult`. |
 | F-11 | Listen time is compared with the song's full length, so a full 30 s preview of a 4-minute song counts as 12%. **Felix to decide** whether the client should send the preview length. |
 | F-12 | Adopted the demo's rules: spread first 5 songs, then nearest in cache, skip weight `-0.05 × (1 - fraction)`. |
-| F-13 | Connected in tests only: `backend/test/contract.test.ts` runs `httpApi.ts` against the backend in-process. Not deployed yet. CloudFront serves `index.html` for app routes through a CloudFront Function rather than error responses. |
+| F-13 | Connected locally: `npm run dev` in `backend/` serves the real backend code, and `frontend/.env.local` points the app at it (checked in a browser 2026-11-25). `backend/test/contract.test.ts` also runs `httpApi.ts` against the backend in-process. Not deployed yet. CloudFront serves `index.html` for app routes through a CloudFront Function rather than error responses. |
 | F-14 | Both added: undo (last 10 swipes) and `GET /songs/taste`. |

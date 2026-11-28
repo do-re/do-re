@@ -303,3 +303,92 @@ describe('MatchController', () => {
     expect(await world.table.query(`CHAT#${[...chatIds][0]}`)).toHaveLength(1); // one META, no stray items
   });
 });
+
+describe('outgoing matches and taking back a yes', () => {
+  async function waiting() {
+    const world = makeWorld();
+    await pool(world, { me: 0.5, you: 0.6, zed: 0.9 });
+    const first = (await world.services.matchModel.findMatch('me', world.clock.now))!; // me + you
+    const second = (await world.services.matchModel.findMatch('me', world.clock.now))!; // me + zed
+    return { world, model: world.services.matchModel, first, second };
+  }
+
+  // spec: outgoing = I confirmed, the other user has not answered; best first
+  it('R_HOME_21_getOutgoingMatchesListsMyConfirmationsStillWaiting', async () => {
+    const { model, first, second } = await waiting();
+    expect(await model.getOutgoingMatches('me')).toEqual([]); // nothing confirmed yet
+    await model.recordDecision(second.matchId, 'me', true);
+    await model.recordDecision(first.matchId, 'me', true);
+    expect((await model.getOutgoingMatches('me')).map((m) => m.matchId)).toEqual([first.matchId, second.matchId]);
+    expect(await model.getOutgoingMatches('you')).toEqual([]); // waiting on you is not outgoing for you
+    await model.recordDecision(first.matchId, 'you', true); // completed: no longer waiting
+    await model.recordDecision(second.matchId, 'zed', false); // declined: no longer waiting
+    expect(await model.getOutgoingMatches('me')).toEqual([]);
+  });
+
+  it('R_HOME_22_takingBackAYesDeclinesTheMatchForBothForGood', async () => {
+    const { world, model, first } = await waiting();
+    await model.recordDecision(first.matchId, 'me', true);
+    await model.retractConfirmation(first.matchId, 'me');
+    expect(await model.getOutgoingMatches('me')).toEqual([]);
+    expect((await model.getPendingMatches('you')).map((m) => m.matchId)).not.toContain(first.matchId);
+    expect(await model.recordDecision(first.matchId, 'you', true)).toBe(false); // a later yes completes nothing
+    expect(await model.isMutual(first.matchId)).toBe(false);
+    expect(await world.services.matchModel.findMatch('you', world.clock.now)).toMatchObject({ userB: 'zed' }); // never me again
+  });
+
+  // spec: 409 unless I confirmed and the other user has not answered; 404 and 403 as usual
+  it('refuses to take back anything that is not a waiting yes', async () => {
+    const { model, first, second } = await waiting();
+    const code = (promise: Promise<unknown>) => promise.then(() => 'ok', (e) => e.code);
+    expect(await code(model.retractConfirmation(first.matchId, 'me'))).toBe('NOT_RETRACTABLE'); // not answered
+    await model.recordDecision(first.matchId, 'me', true);
+    await model.recordDecision(first.matchId, 'you', true);
+    expect(await code(model.retractConfirmation(first.matchId, 'me'))).toBe('NOT_RETRACTABLE'); // already matched
+    expect(await model.isMutual(first.matchId)).toBe(true);
+    await model.recordDecision(second.matchId, 'me', true);
+    await model.recordDecision(second.matchId, 'zed', false);
+    expect(await code(model.retractConfirmation(second.matchId, 'me'))).toBe('NOT_RETRACTABLE'); // they declined
+    await model.recordDecision(second.matchId, 'me', false);
+    expect(await statusOf(model.retractConfirmation('no_match', 'me'))).toBe(404);
+    expect(await statusOf(model.retractConfirmation(first.matchId, 'intruder'))).toBe(403);
+  });
+
+  it('concurrency_aYesTakenBackWhileTheOtherConfirmsEndsOneWayOrTheOther', async () => {
+    for (let round = 0; round < 12; round++) {
+      const { world, model, first } = await waiting();
+      await model.recordDecision(first.matchId, 'me', true);
+      const [retracted, chatId] = await Promise.all([
+        model.retractConfirmation(first.matchId, 'me').then(() => true, () => false),
+        world.services.matches.confirmMatch(first.matchId, 'you'),
+      ]);
+      // exactly one outcome: taken back and no chat, or matched with a chat and the retraction refused
+      expect(retracted).toBe(chatId === undefined);
+      expect(await model.isMutual(first.matchId)).toBe(!retracted);
+      expect(await world.services.chats.getChatLog('me')).toHaveLength(retracted ? 0 : 1);
+    }
+  });
+
+  it('MatchController lists outgoing matches with the other profile, and takes one back', async () => {
+    const world = makeWorld();
+    const me = await world.join('me@example.com');
+    const you = await world.join('you@example.com');
+    await world.services.accounts.updateUsername(you.userId, 'You');
+    await pool(world, { [me.userId]: 0.5, [you.userId]: 0.6 });
+    const match = (await world.services.matchModel.findMatch(me.userId, world.clock.now))!;
+    await world.services.matches.confirmMatch(match.matchId, me.userId);
+    expect(await world.services.matches.getOutgoingMatches(me.userId)).toEqual([
+      { match, otherUser: { userId: you.userId, username: 'You', profilePictureUrl: null } },
+    ]);
+    // through the HTTP routes
+    const listed = await world.call('GET', '/api/matches/outgoing', { token: me.token });
+    expect(listed.body).toEqual({ matches: [{ match, otherUser: { userId: you.userId, username: 'You', profilePictureUrl: null } }] });
+    expect((await world.call('POST', `/api/matches/${match.matchId}/retract`, { token: you.token, body: {} })).status).toBe(409);
+    expect((await world.call('POST', `/api/matches/${match.matchId}/retract`, { token: me.token, body: {} })).status).toBe(204);
+    expect((await world.call('POST', `/api/matches/${match.matchId}/retract`, { token: me.token, body: {} })).status).toBe(409);
+    expect((await world.call('GET', '/api/matches/outgoing', { token: me.token })).body).toEqual({ matches: [] });
+    expect((await world.call('GET', '/api/matches/outgoing')).status).toBe(401);
+    expect(await world.services.matches.getPendingMatches(you.userId)).toEqual([]);
+  });
+});
+

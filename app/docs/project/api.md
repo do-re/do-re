@@ -110,7 +110,13 @@ Request: `{}` · Response `204`.
 | `PATCH /users/me` | token | `{ "username" }` | `204` | `updateUsername` |
 | `PUT /users/me/picture` | token | raw image, `Content-Type: image/*` | `204` | `updateProfilePicture` |
 
-- A wrong password and an unknown email are separate results, as in the stub, but the login page shows the same message for both.
+- **Changed by the security audit of 2026-11-27 (`security.md`):**
+  - Login answers an unknown email with `WRONG_PASSWORD`, exactly like a wrong password; the API never sends `NO_ACCOUNT`.
+  - After 10 failed logins for one email within 15 minutes, login answers `429 RATE_LIMITED` for 15 minutes.
+  - Sign-up needs a password of at least 8 characters (`400 BAD_REQUEST` otherwise).
+  - Signing up over an account that was never verified replaces its password and link (not within a minute of its last email) and answers `PENDING_VERIFICATION`; `EMAIL_IN_USE` is for verified and suspended accounts.
+  - `GET /users/{userId}` answers only for yourself and people you have a match with; otherwise `404 USER_NOT_FOUND`.
+  - `POST /auth/logout` is now called by the client when logging out.
 - A new account's username is **empty** (R-ACC-09). The client shows "New user" until it is set, and must never fall back to the email.
 - **Verification email:** the link must be `<frontend origin>/verify?userId=<id>&token=<single-use token>`. That page calls `POST /accounts/confirm` once.
 - `verification-status` takes the email in the **body** so it never lands in access logs. **Q-12:** it reveals whether an email has an account (notes F-5).
@@ -147,6 +153,8 @@ Request: `{}` · Response `204`.
 | `GET /matches/{matchId}/other-user` | | `UserProfile` | `getOtherProfile` |
 | `POST /matches/{matchId}/confirm` | `{}` | `{ "chatId": "c_789" \| null }` | `confirmMatch` · R-HOME-21, 23, OPEN-4 |
 | `POST /matches/{matchId}/decline` | `{}` | `204` | `declineMatch` · R-HOME-21, 22 |
+| `GET /matches/outgoing` | | `{ "matches": [{ "match": Match, "otherUser": UserProfile }] }` | WEB addition (2026-11-27): matches the caller said yes to that the other user has not answered, best first. Shown as "Waiting for an answer" on the Messages page |
+| `POST /matches/{matchId}/retract` | `{}` | `204`, or `409 NOT_RETRACTABLE` | WEB addition (2026-11-27): takes back the caller's yes. Only while the other user has not answered |
 
 ```jsonc
 // Match
@@ -156,6 +164,41 @@ Request: `{}` · Response `204`.
 - `GET /matches/{matchId}` returns the match only while it is **waiting for the caller's answer**. Otherwise it returns `404`, so an old link can't re-answer a match.
 - `confirm` returns the chat ID once both users have confirmed, and `null` while waiting for the other user. A repeated confirm returns the same result.
 - A decline is final for both users, and the pair is never proposed again (R-HOME-22).
+- **Retracting** turns the caller's yes into a decline, with the same consequences: the other user no longer sees the match and the pair is never proposed again. It is the one exception to "a user's first answer stands". If the other user confirms at the same moment, exactly one of the two takes effect: either the retraction (and their yes completes nothing) or the match (and the retraction gets `409`).
+
+## Push notifications
+
+Added 2026-11-26 (Felix; extra feature, no requirement ID). The browser shows a system notification when another user's swipe matches you, when the other user confirms a match you confirmed, and when you get a chat message. Delivery uses the browser-standard Web Push; the client code is `frontend/src/notifications/` and `frontend/public/sw.js`.
+
+| Route | Request | Response | Notes |
+|---|---|---|---|
+| `GET /push/public-key` | | `{ "publicKey": "<base64url>" }` | The key a browser subscribes with. `503 PUSH_UNAVAILABLE` if the server has none. |
+| `PUT /push/subscription` | `{ "endpoint", "keys": { "p256dh", "auth" } }` (what `PushSubscription.toJSON()` gives) | `204` | This browser now gets the caller's notifications, and no other user's. `400 BAD_REQUEST` unless the endpoint is on a browser push service. Idempotent. |
+| `DELETE /push/subscription` | `{ "endpoint" }` | `204` | Idempotent. |
+
+All three need the session token. The push itself carries `{ "title", "body", "url", "tag" }`, where `url` is `/match/<matchId>` or `/chats/<chatId>`. A message is not pushed to a user who removed or reported that chat. Notification text includes the sender's username and the first 80 characters of a message.
+
+## Reports and admin
+
+Added 2026-11-27 (Felix; extra feature, no requirement ID; OPEN-18). Users can report a profile; admins have a page to review reports and manage users. Client: `frontend/src/views/AdminView.tsx` and the Report dialog in `MatchView.tsx`.
+
+**Who is an admin.** Root admins are the emails in the server's `AdminEmails` setting; they are always admins and cannot be demoted or suspended from the page. Any admin can give or remove admin rights for other accounts. No admin can suspend or demote themselves. A suspended account has no admin rights. Every admin action is logged.
+
+| Route | Request | Response | Notes |
+|---|---|---|---|
+| `POST /users/{userId}/report` | `{ "reason", "details"? }` | `204` | `reason`: `FAKE_ACCOUNT`, `HARASSMENT`, `INAPPROPRIATE`, `SPAM` or `OTHER`; `details` up to 500 characters. Only someone you were matched with: otherwise `403 NOT_PARTICIPANT`. Also declines the match. One report per reporter per person; repeating it changes nothing. |
+| `GET /users/me` | | `UserProfile` plus `"isAdmin": true \| false` | `isAdmin` is only on your own profile. |
+| `POST /auth/login` | | `SUCCESS` gains `"isAdmin": true \| false`; may be `{ "result": "SUSPENDED" }` | `isAdmin` decides whether the client shows the Admin tab. `SUSPENDED` only when the password is right. |
+| `GET /admin/users` | | `{ "users": [AdminUser] }` | Oldest first. |
+| `POST /admin/users/{userId}/suspend` | `{ "reason" }` (1 to 300 characters) | `204` | Logs the user out everywhere, blocks login, removes them from matching and from push. |
+| `POST /admin/users/{userId}/unsuspend` | `{}` | `204` | |
+| `POST /admin/users/{userId}/verify` | `{}` | `204` | Marks the email verified without the link (OPEN-7). |
+| `POST /admin/users/{userId}/admin` | `{ "admin": true \| false }` | `204` | |
+| `GET /admin/reports` | | `{ "reports": [AdminReport] }` | Open first, newest first. |
+| `POST /admin/reports/{reportId}/resolve` | `{ "note"? }` | `204` | |
+| `GET /admin/audit` | | `{ "entries": [AuditEntry] }` | Latest 100, newest first. |
+
+Every `/admin` route answers `403 NOT_ADMIN` to anyone who is not an admin. Breaking a rule above is `400 BAD_REQUEST` with a message that says which. Times in these bodies are milliseconds since the Unix epoch. The shapes are in `frontend/src/api/types.ts` (`AdminUser`, `AdminReport`, `AuditEntry`). The chat screen's existing report button (`POST /chats/{chatId}/report`) now also files a report about the other person, with reason `REPORTED_IN_CHAT`.
 
 ## Errors
 
@@ -214,7 +257,7 @@ What the backend on `felix-backend` does for each open question. Written by Clau
 | Q-8 one chat per match | `createChat(userA, userB)` keeps its signature. The chat ID is derived from the two user IDs and created with a conditional write, so a pair can only ever have one chat and a retry returns the same ID. |
 | Q-9 after remove/report | As proposed: for the user who removed or reported it, routes 2 and 3 return `404 CHAT_NOT_FOUND`. Remove and report themselves stay idempotent (`204`). The other user is unaffected. |
 | Q-10 base URL | One base URL: `<app origin>/api` (CloudFront forwards `/api/*` to the API), so the deployed app is same-origin and needs no CORS. For local development the API's own URL allows `http://localhost:5173`. Both are stack outputs (`ApiBaseUrl`, `DevApiBaseUrl`). |
-| Q-11 picture upload | Raw body as drafted. Limit **4 MB** (Lambda's request limit is 6 MB after base64) → `413 PICTURE_TOO_LARGE`. Accepted types: PNG, JPEG, GIF, WebP, detected from the file's contents, not the `Content-Type` header; anything else → `400 BAD_REQUEST`. **The client's 5 MB check (`MAX_PICTURE_BYTES` in `profileLogic.ts`) should become 4 MB.** |
+| Q-11 picture upload | Raw body as drafted. Limit **4 MB** (Lambda's request limit is 6 MB after base64) → `413 PICTURE_TOO_LARGE`. Accepted types: PNG, JPEG, GIF, WebP, detected from the file's contents, not the `Content-Type` header; anything else → `400 BAD_REQUEST`. The client's check (`MAX_PICTURE_BYTES` in `profileLogic.ts`) is 4 MB to match. |
 | Q-12 verification-status | Implemented as drafted. An unknown email answers `{ "verified": false }` rather than an error. It still reveals verified accounts (OPEN-16). |
 | Q-13 `onAppOpened` | Not needed by the browser: `GET /songs/current` fills the cache when it is empty. |
 | Q-14 undo | Implemented: the server keeps each user's last 10 swipes with the Taste Vector before each. `GET /songs/taste` is served to the logged-in user for their own vector only. |

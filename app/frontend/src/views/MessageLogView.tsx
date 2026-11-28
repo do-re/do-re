@@ -4,6 +4,9 @@
  * chat and a button that removes it from this user's log. The list refreshes while open, so a
  * chat appears when the other user confirms a match (OPEN-4, notes-for-yara Y-6).
  *
+ * WEB: below the chats, "Waiting for an answer" lists the matches the user said yes to that the
+ * other person has not answered, each with a button to take the yes back after a confirmation.
+ *
  * Satisfies: R-CHAT-01, R-CHAT-02.
  * Communicates with: ChatController (via useApi()), ViewController (via the router).
  */
@@ -11,7 +14,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../api/ApiContext';
 import { displayName } from '../api/profile';
-import type { ChatSummary } from '../api/types';
+import { ApiError } from '../api/apiErrors';
+import type { ChatSummary, OutgoingMatch } from '../api/types';
 import { Avatar } from '../components/Avatar';
 import { Modal } from '../components/Modal';
 import { PATHS } from '../paths';
@@ -44,6 +48,13 @@ export function MessageLogView() {
   // Bumped by each removal, so a refresh that started before it can't bring the row back.
   const generation = useRef(0);
 
+  // Matches the user said yes to that are still waiting for the other person.
+  const [outgoing, setOutgoing] = useState<readonly OutgoingMatch[]>([]);
+  const [retraction, setRetraction] = useState<OutgoingMatch | null>(null);
+  const [retracting, setRetracting] = useState(false);
+  const [retractError, setRetractError] = useState<string | null>(null);
+  const outgoingGeneration = useRef(0);
+
   usePolling(async (isActive) => {
     const startedIn = generation.current;
     try {
@@ -51,6 +62,11 @@ export function MessageLogView() {
       if (isActive() && startedIn === generation.current) {
         setLog({ kind: 'ready', chats, connectionLost: false });
       }
+      // The waiting list is secondary: if it can't be read, the chats still show and the last
+      // list stays.
+      const startedOutgoingIn = outgoingGeneration.current;
+      const waiting = await api.matches.getOutgoingMatches(userId).catch(() => null);
+      if (waiting !== null && isActive() && startedOutgoingIn === outgoingGeneration.current) setOutgoing(waiting);
       return 'continue';
     } catch (error) {
       if (!isActive()) return 'continue';
@@ -100,6 +116,49 @@ export function MessageLogView() {
       setRemoveError(describeChatError(error));
     } finally {
       setRemoving(false);
+    }
+  }
+
+  function closeRetraction() {
+    if (retracting) return;
+    setRetraction(null);
+    setRetractError(null);
+  }
+
+  /**
+   * WEB: the confirmation popup's "Take back" button.
+   * Requires: an outgoing match is awaiting confirmation in the popup.
+   * Effects: asks MatchController to take back the user's yes and removes the row. If the other
+   *          person answered in the meantime, removes the row and says so. On any other failure
+   *          the popup stays open and says what to do.
+   */
+  async function confirmRetraction() {
+    if (retraction === null || retracting) return;
+    const target = retraction;
+    const drop = () => {
+      outgoingGeneration.current += 1;
+      setOutgoing((previous) => previous.filter((entry) => entry.match.matchId !== target.match.matchId));
+    };
+    setRetracting(true);
+    setRetractError(null);
+    try {
+      await api.matches.retractMatch(target.match, userId);
+      drop();
+      setRetraction(null);
+      setRemovedCount((n) => n + 1);
+    } catch (error) {
+      if (isSessionExpired(error)) {
+        session.logOut();
+        return;
+      }
+      if (error instanceof ApiError && error.status === 409) {
+        drop();
+        setRetractError(`${displayName(target.otherUser)} has already answered, so this can't be taken back. Check your chats.`);
+      } else {
+        setRetractError(describeChatError(error));
+      }
+    } finally {
+      setRetracting(false);
     }
   }
 
@@ -156,6 +215,65 @@ export function MessageLogView() {
             );
           })}
         </ul>
+      )}
+
+      {outgoing.length > 0 && (
+        <section className="chat-log__waiting" aria-labelledby="waiting-title">
+          <h2 id="waiting-title" className="chat-log__subtitle">
+            Waiting for an answer
+          </h2>
+          <p className="chat-log__hint">You said yes to these matches. A chat opens when they say yes too.</p>
+          <ul className="chat-log__list">
+            {outgoing.map((entry) => {
+              const name = displayName(entry.otherUser);
+              return (
+                <li key={entry.match.matchId} className="chat-log__row">
+                  <div className="chat-log__open">
+                    <div className="chat-avatar">
+                      <Avatar profile={entry.otherUser} label={name} />
+                    </div>
+                    <div className="chat-log__text">
+                      <div className="chat-log__name">{name}</div>
+                      <div className="chat-log__preview">{entry.match.compatibilityPercent.toFixed(1)}% match · waiting</div>
+                    </div>
+                  </div>
+                  <button type="button" className="chat-log__retract" onClick={() => setRetraction(entry)}>
+                    Take back <span className="visually-hidden">your yes to {name}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      {retraction !== null && (
+        <Modal title={`Take back your yes to ${displayName(retraction.otherUser)}?`} onClose={closeRetraction}>
+          <p>
+            {displayName(retraction.otherUser)} will no longer see this match, and you won't be matched with them
+            again. This can't be undone.
+          </p>
+          {retractError !== null && (
+            <p className="chat-modal__error" role="alert">
+              {retractError}
+            </p>
+          )}
+          <div className="chat-modal__actions">
+            <button type="button" className="chat-modal__button" onClick={closeRetraction} disabled={retracting}>
+              {retractError !== null && !outgoing.includes(retraction) ? 'Close' : 'Cancel'}
+            </button>
+            {outgoing.includes(retraction) && (
+              <button
+                type="button"
+                className="chat-modal__button chat-modal__button--danger"
+                onClick={() => void confirmRetraction()}
+                disabled={retracting}
+              >
+                Take back
+              </button>
+            )}
+          </div>
+        </Modal>
       )}
 
       {removal !== null && (

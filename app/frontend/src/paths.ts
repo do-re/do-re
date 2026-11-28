@@ -9,6 +9,8 @@ export const PATHS = {
   verify: '/verify',
   home: '/home',
   profile: '/profile',
+  /** The admin page (OPEN-18). Only admins can use it; the server checks. */
+  admin: '/admin',
   match: (matchId: string) => `/match/${encodeURIComponent(matchId)}`,
   /** Yara's MessageLogView. */
   chats: '/chats',

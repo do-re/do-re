@@ -88,3 +88,45 @@
   color: var(--accent);
   font-weight: 600;
 }
+
+/* Report (OPEN-18): a quiet link-style button under the answer buttons, and its dialog. */
+.match__report {
+  margin-top: 8px;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.match__reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  text-align: left;
+}
+
+.match__reasons legend {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.match__reasons label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.match__hint {
+  margin: 0;
+  font-size: 0.85rem;
+  opacity: 0.8;
+  text-align: left;
+}

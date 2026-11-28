@@ -1,7 +1,7 @@
 import type { ListeningEvent, Song } from '../model/types';
 import { TasteVector } from '../model/vectors';
 import { type Item, type Key, type Table, updateItem } from '../store/Table';
-import type { SongLibrary } from './SongLibrary';
+import type { SongCatalog } from './SongCatalog';
 
 const tasteKey = (userId: string): Key => ({ pk: `USER#${userId}`, sk: 'TASTE' });
 
@@ -12,7 +12,7 @@ const tasteKey = (userId: string): Key => ({ pk: `USER#${userId}`, sk: 'TASTE' }
  *
  * Stored state: USER#<id> / TASTE with vector (7 numbers), history (song IDs, most recent
  * first) and undos (for each of the last UNDO_LIMIT listens, the vector before it and the
- * history entry it pushed out, oldest first). A song's Audio Features are found through the library by its ID, so they
+ * history entry it pushed out, oldest first). A song's Audio Features are found through the song catalog by its ID, so they
  * always accompany the song (R-HOME-12).
  *
  * Abstraction function: AF(table) = for each user with a TASTE item, their Taste Vector and
@@ -47,7 +47,7 @@ export class MusicTasteModel {
 
   constructor(
     private readonly table: Table,
-    private readonly library: SongLibrary,
+    private readonly catalog: SongCatalog,
   ) {}
 
   /**
@@ -121,11 +121,12 @@ export class MusicTasteModel {
    * Requires: userId belongs to an existing account.
    * Effects: none.
    * @returns the user's listened songs, most recent first, at most HISTORY_SIZE long
-   *          (songs no longer in the library are left out)
+   *          (songs the app no longer knows are left out)
    */
   async getRecentSongs(userId: string): Promise<Song[]> {
     const ids = historyOf(await this.table.get(tasteKey(userId)));
-    return ids.map((id) => this.library.get(id)).filter((song) => song !== undefined);
+    const songs = await Promise.all(ids.map((id) => this.catalog.get(id)));
+    return songs.filter((song) => song !== undefined);
   }
 
   /**

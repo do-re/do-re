@@ -1,10 +1,13 @@
 import { type Clock, type RandomSource, sha256Hex } from '../deps';
 import type { CreateAccountResult, LoginResult, UserProfile } from '../model/types';
-import type { Key, Table } from '../store/Table';
+import { AppError } from '../errors';
+import { type Key, type Table, updateItem } from '../store/Table';
 import { type AccountModel, normalizeEmail } from './AccountModel';
 import type { EmailSender } from './EmailSender';
 
 const verifyKey = (userId: string): Key => ({ pk: `USER#${userId}`, sk: 'VERIFY' });
+/** Failed-login counter for an email address, whether or not an account uses it. */
+const guardKey = (email: string): Key => ({ pk: `LOGIN#${email}`, sk: 'ATTEMPTS' });
 
 /**
  * @param email an email address as typed
@@ -25,6 +28,9 @@ export function isWellFormedEmail(email: string): boolean {
  *
  * Stored state: USER#<id> / VERIFY with tokenHash, expiresAt, sentAt, ttl: the one valid
  * confirmation token of an unverified account, stored only as a SHA-256 digest.
+ * LOGIN#<email> / ATTEMPTS with failures, windowStart, lockedUntil, ttl: the failed-login
+ * counter that slows password guessing (updated through updateItem, so concurrent failures
+ * are all counted).
  *
  * Concurrency: sending writes the VERIFY item with a plain put (a later email replaces an
  * earlier one's token). confirmEmail activates first, which is idempotent, then deletes the
@@ -36,6 +42,10 @@ export class AccountController {
   static readonly VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
   /** A failed login by an unverified user re-sends the link at most this often. */
   static readonly RESEND_COOLDOWN_MS = 60 * 1000;
+  /** This many failed logins for one email within LOGIN_WINDOW_MS lock it for LOGIN_LOCK_MS. */
+  static readonly MAX_FAILED_LOGINS = 10;
+  static readonly LOGIN_WINDOW_MS = 15 * 60 * 1000;
+  static readonly LOGIN_LOCK_MS = 15 * 60 * 1000;
 
   /**
    * @param appBaseUrl origin of the web app, e.g. "https://d123.cloudfront.net", no trailing slash
@@ -53,29 +63,62 @@ export class AccountController {
    * Validates submitted login details.
    * Satisfies: R-ACC-03, R-ACC-04, R-SEC-03.
    *
-   * Effects: none, except: if the result is NOT_VERIFIED and no confirmation email was sent
-   *          to this account in the last RESEND_COOLDOWN_MS, a new one is sent (replacing the
-   *          old link). Added to stubs v2 so a lost email cannot lock an account out for good.
-   * @returns SUCCESS if valid and verified; NOT_VERIFIED if valid but unverified;
+   * Effects: counts failed attempts per email: after MAX_FAILED_LOGINS failures within
+   *          LOGIN_WINDOW_MS the email is locked for LOGIN_LOCK_MS, whether or not an account
+   *          uses it (so the lock reveals nothing); a correct password clears the count.
+   *          If the result is NOT_VERIFIED and no confirmation email was sent to this
+   *          account in the last RESEND_COOLDOWN_MS, a new one is sent (replacing the old
+   *          link), so a lost email cannot lock an account out for good.
+   * @returns SUSPENDED if the password is right but an admin suspended the account (so only
+   *          someone who knows the password learns that); otherwise
+   *          SUCCESS if valid and verified; NOT_VERIFIED if valid but unverified;
    *          WRONG_PASSWORD if the email exists but the password does not match;
    *          NO_ACCOUNT if no account uses the email
+   * @throws AppError 429 RATE_LIMITED while the email is locked (the password is not checked)
    */
   async login(email: string, password: string): Promise<LoginResult> {
-    if (!(await this.accountModel.isEmailInUse(email))) {
-      return 'NO_ACCOUNT';
+    const address = normalizeEmail(email);
+    const guard = await this.table.get(guardKey(address));
+    const lockedFor = ((guard?.lockedUntil ?? 0) as number) - this.clock();
+    if (lockedFor > 0) {
+      const minutes = Math.ceil(lockedFor / 60_000);
+      throw new AppError(429, 'RATE_LIMITED', `Too many failed attempts. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`);
     }
     if (!(await this.accountModel.isValidLogin(email, password))) {
-      return 'WRONG_PASSWORD';
+      await this.recordFailedLogin(address);
+      return (await this.accountModel.isEmailInUse(email)) ? 'WRONG_PASSWORD' : 'NO_ACCOUNT';
+    }
+    if (guard !== undefined) {
+      await this.table.write([{ op: 'delete', key: guardKey(address), expect: 'any' }]);
     }
     const userId = await this.accountModel.getUserId(email);
-    if (await this.accountModel.isActive(userId)) {
+    const account = await this.accountModel.getAccount(userId);
+    if (account.suspended !== null) {
+      return 'SUSPENDED';
+    }
+    if (account.active) {
       return 'SUCCESS';
     }
     const pending = await this.table.get(verifyKey(userId));
     if (pending === undefined || this.clock() - (pending.sentAt as number) >= AccountController.RESEND_COOLDOWN_MS) {
-      await this.sendConfirmationEmail(normalizeEmail(email), userId);
+      await this.sendConfirmationEmail(address, userId);
     }
     return 'NOT_VERIFIED';
+  }
+
+  /** Counts one failed login for address, locking it when the limit is reached. */
+  private async recordFailedLogin(address: string): Promise<void> {
+    const now = this.clock();
+    await updateItem(this.table, guardKey(address), (current) => {
+      const fresh = current === undefined || now - (current.windowStart as number) >= AccountController.LOGIN_WINDOW_MS;
+      const failures = fresh ? 1 : (current.failures as number) + 1;
+      const windowStart = fresh ? now : (current.windowStart as number);
+      const locked = failures >= AccountController.MAX_FAILED_LOGINS;
+      const lockedUntil = locked ? now + AccountController.LOGIN_LOCK_MS : 0;
+      const keepUntil = Math.max(windowStart + AccountController.LOGIN_WINDOW_MS, lockedUntil);
+      // After a lock the count starts again, so the next lock needs another full run of failures.
+      return { attrs: { failures: locked ? 0 : failures, windowStart, lockedUntil, ttl: Math.ceil(keepUntil / 1000) }, result: undefined };
+    });
   }
 
   /**
@@ -92,10 +135,15 @@ export class AccountController {
    *
    * Effects: if email is well-formed, password is non-empty, password equals confirmPassword
    *          and the email is not in use, an inactive account is created in AccountModel and
-   *          a confirmation email is sent to email; otherwise nothing changes.
+   *          a confirmation email is sent to email. If the email is used only by an account
+   *          that was never verified (and is not suspended), and its last confirmation email
+   *          is at least RESEND_COOLDOWN_MS old, that account's password is replaced with
+   *          this one and a new confirmation email is sent (the old link stops working).
+   *          Otherwise nothing changes.
    * @returns INVALID_EMAIL if email is not well-formed; otherwise PASSWORDS_DO_NOT_MATCH if
-   *          password is empty or differs from confirmPassword; otherwise EMAIL_IN_USE if an
-   *          account already uses email; otherwise PENDING_VERIFICATION
+   *          password is empty or differs from confirmPassword; otherwise EMAIL_IN_USE if a
+   *          verified or suspended account uses email, or an unverified one was emailed less
+   *          than RESEND_COOLDOWN_MS ago; otherwise PENDING_VERIFICATION
    * @throws AppError 502 if the account was created but the email could not be sent
    */
   async createAccount(email: string, password: string, confirmPassword: string): Promise<CreateAccountResult> {
@@ -105,9 +153,20 @@ export class AccountController {
     if (password === '' || password !== confirmPassword) {
       return 'PASSWORDS_DO_NOT_MATCH';
     }
-    const userId = await this.accountModel.createAccount(email, password);
+    let userId = await this.accountModel.createAccount(email, password);
     if (userId === undefined) {
-      return 'EMAIL_IN_USE';
+      // The email has an account. If nobody ever verified it, whoever signs up now takes it
+      // over with their own password: otherwise anyone could block an address they do not
+      // own, or leave an account under it with a password of their choosing for the owner to
+      // activate by mistake. Not within RESEND_COOLDOWN_MS of the last email, so a real
+      // sign-up has time to be confirmed and the address cannot be flooded with emails.
+      const existing = await this.accountModel.getUserId(email);
+      const pending = await this.table.get(verifyKey(existing));
+      const recent = pending !== undefined && this.clock() - (pending.sentAt as number) < AccountController.RESEND_COOLDOWN_MS;
+      if (recent || !(await this.accountModel.replaceUnverifiedPassword(existing, password))) {
+        return 'EMAIL_IN_USE';
+      }
+      userId = existing;
     }
     await this.sendConfirmationEmail(normalizeEmail(email), userId);
     return 'PENDING_VERIFICATION';

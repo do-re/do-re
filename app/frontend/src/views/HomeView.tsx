@@ -15,10 +15,12 @@
  * router), the player (via usePlayerFactory()).
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useApi } from '../api/ApiContext';
 import type { Feedback, Song } from '../api/types';
 import { SongStatsPanel } from '../components/DevPanels';
+import { usePendingMatchReads, usePendingMatches } from '../matches/pendingMatchesContext';
+import { dismissPushHint, shouldShowPushHint, usePushNotifications } from '../notifications/push';
 import { PATHS } from '../paths';
 import { usePlayerFactory } from '../player/PlayerContext';
 import type { PlaybackState, SongPlayer } from '../player/types';
@@ -64,6 +66,15 @@ export function HomeView() {
   const [notice, setNotice] = useState(() => readNotice(location.state));
   const createPlayer = usePlayerFactory();
   const [devMode] = useDevMode();
+  // Matches waiting for the user's answer, kept up to date while the page is open (R-HOME-20).
+  const waitingMatches = usePendingMatches();
+  // One-time offer to turn notifications on (the switch itself is on Profile).
+  const push = usePushNotifications(api.push);
+  const [pushHint, setPushHint] = useState(shouldShowPushHint);
+  const closePushHint = () => {
+    dismissPushHint();
+    setPushHint(false);
+  };
 
   useEffect(() => {
     if (readNotice(location.state) !== null) navigate(location.pathname, { replace: true, state: null });
@@ -129,21 +140,25 @@ export function HomeView() {
     playerRef.current?.load(next.spotifyUri);
   }, []);
 
-  // Opening the page: show a pending match first if there is one (R-HOME-20), else the song.
+  // Opening the page: show a pending match first if there is one (R-HOME-20). The list comes from
+  // PendingMatchesProvider, which reads it afresh when this page opens; the first fresh read
+  // decides, and a match not yet shown in this tab is opened once. Later matches show as the
+  // banner and the Home badge instead of interrupting the song.
+  const pendingReads = usePendingMatchReads();
+  const readsAtOpen = useRef(pendingReads);
+  const openedMatch = useRef(false);
+  useEffect(() => {
+    if (openedMatch.current || pendingReads === readsAtOpen.current) return;
+    openedMatch.current = true;
+    const unseen = waitingMatches.find((m) => !wasMatchShown(m.matchId));
+    if (unseen === undefined) return;
+    markMatchShown(unseen.matchId);
+    navigate(PATHS.match(unseen.matchId));
+  }, [pendingReads, waitingMatches, navigate]);
+
+  // Opening the page: load the song.
   useEffect(() => {
     let cancelled = false;
-
-    api.matches.getPendingMatches(userId).then(
-      (pending) => {
-        const unseen = pending.find((m) => !wasMatchShown(m.matchId));
-        if (cancelled || unseen === undefined) return;
-        markMatchShown(unseen.matchId);
-        navigate(PATHS.match(unseen.matchId));
-      },
-      () => {
-        // Not critical: the match is offered again next time the page opens.
-      },
-    );
 
     api.songs.getCurrentSong(userId).then(
       (current) => {
@@ -325,6 +340,34 @@ export function HomeView() {
         <p className="home__notice" role="status">
           {notice}
         </p>
+      )}
+
+      {waitingMatches.length > 0 && (
+        <aside className="home__match-banner" aria-label="New match">
+          <p>{waitingMatches.length === 1 ? 'You have a new match!' : `You have ${waitingMatches.length} new matches!`}</p>
+          <Link className="home__match-link" to={PATHS.match(waitingMatches[0].matchId)}>
+            See match
+          </Link>
+        </aside>
+      )}
+
+      {pushHint && push.state === 'off' && (
+        <aside className="home__push-hint" aria-label="Notifications">
+          <p>Get notified about matches and messages.</p>
+          <div>
+            <button
+              type="button"
+              className="home__pill"
+              disabled={push.busy}
+              onClick={() => void push.setEnabled(true).then(closePushHint)}
+            >
+              Turn on
+            </button>
+            <button type="button" className="home__pill home__pill--quiet" onClick={closePushHint}>
+              Not now
+            </button>
+          </div>
+        </aside>
       )}
 
       <header className="home__header" aria-live="polite">

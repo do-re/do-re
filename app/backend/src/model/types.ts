@@ -130,7 +130,8 @@ export interface UndoResult {
   readonly canUndo: boolean;
 }
 
-export type LoginResult = 'SUCCESS' | 'WRONG_PASSWORD' | 'NO_ACCOUNT' | 'NOT_VERIFIED';
+/** SUSPENDED was added with the admin panel (OPEN-18). */
+export type LoginResult = 'SUCCESS' | 'WRONG_PASSWORD' | 'NO_ACCOUNT' | 'NOT_VERIFIED' | 'SUSPENDED';
 
 export type CreateAccountResult =
   | 'PENDING_VERIFICATION'

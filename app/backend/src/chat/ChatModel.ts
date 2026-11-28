@@ -223,6 +223,17 @@ export class ChatModel {
     return requireChat(await this.table.get(metaKey(chatId))).flagged === true;
   }
 
+  /**
+   * Effects: none.
+   * @returns true iff chatId names an existing chat, userId is one of its participants, and
+   *          userId has neither removed nor reported it (so it is in their message log)
+   */
+  async isVisibleTo(chatId: string, userId: string): Promise<boolean> {
+    const meta = await this.table.get(metaKey(chatId));
+    const participant = meta !== undefined && (meta.userA === userId || meta.userB === userId);
+    return participant && !(meta.hiddenFor as string[]).includes(userId);
+  }
+
   /** Atomic read-modify-write of a chat's META item on behalf of a participant. */
   private updateMeta<T>(
     chatId: string,

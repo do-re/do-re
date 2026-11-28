@@ -323,3 +323,127 @@ describe('session handling', () => {
     await expect(rejected.request('GET', '/x')).rejects.toMatchObject({ status: 401 });
   });
 });
+
+describe('push routes', () => {
+  it('getPublicKey: GET /push/public-key with the token', async () => {
+    const { api, call } = setup(() => json({ publicKey: 'BKey' }));
+    expect(await api.push.getPublicKey()).toBe('BKey');
+    expect(call()).toMatchObject({ method: 'GET', url: 'https://api.test/push/public-key' });
+    expect(call().headers.Authorization).toBe('Bearer test-token');
+  });
+
+  it.each([[{}], [{ publicKey: '' }], [{ publicKey: 5 }], ['text']])('getPublicKey rejects a malformed body %j', async (body) => {
+    const { api } = setup(() => json(body));
+    await expect(api.push.getPublicKey()).rejects.toMatchObject({ code: 'INTERNAL' });
+  });
+
+  it('saveSubscription: PUT /push/subscription with only the endpoint and keys', async () => {
+    const { api, call } = setup(() => new Response(null, { status: 204 }));
+    const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys: { p256dh: 'p', auth: 'a' }, expirationTime: null };
+    await api.push.saveSubscription(subscription);
+    expect(call()).toMatchObject({ method: 'PUT', url: 'https://api.test/push/subscription' });
+    expect(JSON.parse(call().body as string)).toEqual({ endpoint: subscription.endpoint, keys: { p256dh: 'p', auth: 'a' } });
+  });
+
+  it('removeSubscription: DELETE /push/subscription with the endpoint in the body', async () => {
+    const { api, call } = setup(() => new Response(null, { status: 204 }));
+    await api.push.removeSubscription('https://fcm.googleapis.com/fcm/send/abc');
+    expect(call()).toMatchObject({ method: 'DELETE', url: 'https://api.test/push/subscription' });
+    expect(JSON.parse(call().body as string)).toEqual({ endpoint: 'https://fcm.googleapis.com/fcm/send/abc' });
+  });
+});
+
+describe('report and admin routes (OPEN-18)', () => {
+  it('login says when the user is an admin, and only then', async () => {
+    const admin = setup(() => json({ result: 'SUCCESS', userId: 'u1', token: 'tok', isAdmin: true }));
+    expect(await admin.api.account.login('a@b.co', 'pw')).toEqual({ result: 'SUCCESS', userId: 'u1', token: 'tok', isAdmin: true });
+    for (const isAdmin of [false, 'yes', undefined]) {
+      const other = setup(() => json({ result: 'SUCCESS', userId: 'u1', token: 'tok', isAdmin }));
+      expect(await other.api.account.login('a@b.co', 'pw')).toEqual({ result: 'SUCCESS', userId: 'u1', token: 'tok' });
+    }
+  });
+
+  it('login passes on SUSPENDED', async () => {
+    const { api } = setup(() => json({ result: 'SUSPENDED' }));
+    expect(await api.account.login('a@b.co', 'pw')).toEqual({ result: 'SUSPENDED' });
+  });
+
+  it('reportProfile: POST /users/{the other user}/report with the reason and details', async () => {
+    const { api, call } = setup(empty);
+    await api.matches.reportProfile(MATCH, 'u1', 'SPAM', 'ads');
+    expect(call()).toMatchObject({ method: 'POST', url: 'https://api.test/users/u2/report' });
+    expect(JSON.parse(call().body as string)).toEqual({ reason: 'SPAM', details: 'ads' });
+    const other = setup(empty);
+    await other.api.matches.reportProfile(MATCH, 'u2', 'OTHER', '');
+    expect(other.call().url).toBe('https://api.test/users/u1/report');
+  });
+
+  it('lists users, reports and the activity log', async () => {
+    const users = setup(() => json({ users: [{ userId: 'u1' }] }));
+    expect(await users.api.admin.listUsers('me')).toEqual([{ userId: 'u1' }]);
+    expect(users.call()).toMatchObject({ method: 'GET', url: 'https://api.test/admin/users' });
+    const reports = setup(() => json({ reports: [] }));
+    expect(await reports.api.admin.listReports('me')).toEqual([]);
+    expect(reports.call().url).toBe('https://api.test/admin/reports');
+    const audit = setup(() => json({ entries: [{ action: 'VERIFY' }] }));
+    expect(await audit.api.admin.auditLog('me')).toEqual([{ action: 'VERIFY' }]);
+    expect(audit.call().url).toBe('https://api.test/admin/audit');
+    await expect(setup(() => json({ users: 'x' })).api.admin.listUsers('me')).rejects.toMatchObject({ code: 'INTERNAL' });
+    await expect(setup(() => json('x')).api.admin.listReports('me')).rejects.toMatchObject({ code: 'INTERNAL' });
+  });
+
+  it.each([
+    ['suspend', (a: ReturnType<typeof setup>['api']) => a.admin.suspend('me', 'u/2', 'spam'), '/admin/users/u%2F2/suspend', { reason: 'spam' }],
+    ['unsuspend', (a: ReturnType<typeof setup>['api']) => a.admin.unsuspend('me', 'u2'), '/admin/users/u2/unsuspend', {}],
+    ['verify', (a: ReturnType<typeof setup>['api']) => a.admin.verify('me', 'u2'), '/admin/users/u2/verify', {}],
+    ['setAdmin', (a: ReturnType<typeof setup>['api']) => a.admin.setAdmin('me', 'u2', true), '/admin/users/u2/admin', { admin: true }],
+    ['resolveReport', (a: ReturnType<typeof setup>['api']) => a.admin.resolveReport('me', 'u2.u1', 'done'), '/admin/reports/u2.u1/resolve', { note: 'done' }],
+  ])('%s posts to its route', async (_name, act, path, body) => {
+    const { api, call } = setup(empty);
+    await act(api);
+    expect(call()).toMatchObject({ method: 'POST', url: `https://api.test${path}` });
+    expect(JSON.parse(call().body as string)).toEqual(body);
+  });
+
+  it('passes on the server refusing a non-admin', async () => {
+    const { api } = setup(() => json({ error: { code: 'NOT_ADMIN', message: 'This page is for admins.' } }, 403));
+    await expect(api.admin.listUsers('me')).rejects.toMatchObject({ code: 'NOT_ADMIN', status: 403 });
+  });
+});
+
+describe('outgoing match routes', () => {
+  it('getOutgoingMatches: GET /matches/outgoing', async () => {
+    const { api, call } = setup(() => json({ matches: [{ match: MATCH, otherUser: PROFILE }] }));
+    expect(await api.matches.getOutgoingMatches('u1')).toEqual([{ match: MATCH, otherUser: PROFILE }]);
+    expect(call()).toMatchObject({ method: 'GET', url: 'https://api.test/matches/outgoing' });
+  });
+
+  it.each([[{}], [{ matches: 'x' }], [{ matches: ['x'] }], [{ matches: [{ match: {}, otherUser: PROFILE }] }], [{ matches: [{ match: MATCH, otherUser: {} }] }]])(
+    'getOutgoingMatches rejects a malformed body %j',
+    async (body) => {
+      const { api } = setup(() => json(body));
+      await expect(api.matches.getOutgoingMatches('u1')).rejects.toMatchObject({ code: 'INTERNAL' });
+    },
+  );
+
+  it('retractMatch: POST /matches/{matchId}/retract', async () => {
+    const { api, call } = setup(empty);
+    await api.matches.retractMatch(MATCH, 'u1');
+    expect(call()).toMatchObject({ method: 'POST', url: 'https://api.test/matches/m%2F1/retract' });
+  });
+});
+
+describe('security audit 2026-11-27', () => {
+  it('logout: POST /auth/logout with the token, so the server ends the session', async () => {
+    const { api, call } = setup(empty);
+    await api.account.logout();
+    expect(call()).toMatchObject({ method: 'POST', url: 'https://api.test/auth/logout' });
+    expect(call().headers.Authorization).toBe('Bearer test-token');
+  });
+
+  it('login passes on the server locking an email after too many attempts', async () => {
+    const { api } = setup(() => json({ error: { code: 'RATE_LIMITED', message: 'Too many failed attempts. Try again in 15 minutes.' } }, 429));
+    await expect(api.account.login('a@b.co', 'pw')).rejects.toMatchObject({ code: 'RATE_LIMITED', status: 429 });
+  });
+});
+

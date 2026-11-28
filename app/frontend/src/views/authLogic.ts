@@ -42,9 +42,12 @@ export function validateLogin(email: string, password: string): FieldErrors {
   });
 }
 
+/** Shortest password the server accepts for a new account (backend MIN_PASSWORD_LENGTH). */
+export const MIN_PASSWORD_LENGTH = 8;
+
 /**
- * Same rules as AccountController.createAccount: a well-formed email, a non-empty password,
- * and the confirmation equal to the password.
+ * Same rules as the server's sign-up route: a well-formed email, a password of at least
+ * MIN_PASSWORD_LENGTH characters, and the confirmation equal to the password.
  * Satisfies: R-ACC-07, R-ACC-08 (client-side half).
  * Requires: none.
  * Effects: none.
@@ -58,7 +61,12 @@ export function validateSignup(email: string, password: string, confirmPassword:
   }
   return compact({
     email: emailError(email),
-    password: password === '' ? 'Choose a password.' : undefined,
+    password:
+      password === ''
+        ? 'Choose a password.'
+        : password.length < MIN_PASSWORD_LENGTH
+          ? `Use at least ${MIN_PASSWORD_LENGTH} characters.`
+          : undefined,
     confirmPassword: confirm,
   });
 }

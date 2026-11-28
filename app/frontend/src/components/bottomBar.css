@@ -21,3 +21,25 @@
 .bottom-bar .bottom-bar__tab.active {
   box-shadow: inset 0 3px 0 var(--accent);
 }
+
+/* Matches waiting for an answer: a count on the Home tab (R-HOME-20). */
+.bottom-bar .bottom-bar__tab[data-badge] {
+  position: relative;
+}
+
+.bottom-bar .bottom-bar__tab[data-badge]::after {
+  content: attr(data-badge);
+  position: absolute;
+  top: 4px;
+  left: calc(50% + 6px);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}

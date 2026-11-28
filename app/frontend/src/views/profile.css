@@ -145,3 +145,16 @@
   font-weight: 600;
   text-decoration: underline;
 }
+
+/* Why the Notifications switch could not be changed. */
+.profile__problem {
+  margin: 0.25rem 0 0;
+  color: #b91c1c;
+  font-size: 0.85rem;
+}
+
+/* Link to the admin page, shown to admins only (OPEN-18). */
+.profile__admin {
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}

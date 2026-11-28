@@ -252,8 +252,14 @@ describe('CreateAccountView client-side checks', () => {
 });
 
 describe('validateSignup', () => {
-  it('accepts a well-formed email with matching non-empty passwords', () => {
-    expect(validateSignup('a@b.co', 'pw', 'pw')).toEqual({});
+  it('accepts a well-formed email with matching passwords of at least 8 characters', () => {
+    expect(validateSignup('a@b.co', 'pw-12345', 'pw-12345')).toEqual({});
+  });
+
+  // boundary: 7 characters is too short, 8 is enough (security audit 2026-11-27, notes F-10)
+  it('security_asksForAPasswordOfAtLeastEightCharacters', () => {
+    expect(validateSignup('a@b.co', '1234567', '1234567')).toEqual({ password: 'Use at least 8 characters.' });
+    expect(validateSignup('a@b.co', '12345678', '12345678')).toEqual({});
   });
 
   it('reports every invalid field at once', () => {
@@ -261,7 +267,7 @@ describe('validateSignup', () => {
       email: 'Enter an email address like name@example.com.',
       password: 'Choose a password.',
     });
-    expect(validateSignup('', 'pw', 'nope')).toEqual({
+    expect(validateSignup('', 'pw-12345', 'nope')).toEqual({
       email: 'Enter your email address.',
       confirmPassword: "Passwords don't match. Type the same password in both boxes.",
     });

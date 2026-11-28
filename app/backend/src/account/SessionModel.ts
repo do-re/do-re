@@ -1,7 +1,9 @@
 import { type Clock, type RandomSource, sha256Hex } from '../deps';
-import type { Key, Table } from '../store/Table';
+import type { Key, Table, WriteOp } from '../store/Table';
 
 const sessionKey = (token: string): Key => ({ pk: `SESSION#${sha256Hex(token)}`, sk: 'SESSION' });
+/** One per session under its user, so all of a user's sessions can be found and ended. */
+const pointerKey = (userId: string, sessionPk: string): Key => ({ pk: `USER#${userId}`, sk: sessionPk });
 
 /**
  * SessionModel: remembers which user each login token belongs to. New in the TypeScript
@@ -9,7 +11,8 @@ const sessionKey = (token: string): Key => ({ pk: `SESSION#${sha256Hex(token)}`,
  * checkable on a server whose instances share no memory.
  * Resides on: server. Communicates with: the HTTP layer (every authenticated request).
  *
- * Stored state: SESSION#<sha256 of token> / SESSION with userId, expiresAt and ttl
+ * Stored state: USER#<id> / SESSION#<sha256 of token> (a pointer, so a user's sessions can
+ * all be ended), and SESSION#<sha256 of token> / SESSION with userId, expiresAt and ttl
  * (DynamoDB's TTL attribute, in seconds, so expired sessions are deleted automatically).
  *
  * Abstraction function: AF(table) = the map from each unexpired issued token to its user.
@@ -38,7 +41,11 @@ export class SessionModel {
     const token = this.random.token();
     const expiresAt = this.clock() + SessionModel.TTL_MS;
     const item = { ...sessionKey(token), version: 1, userId, expiresAt, ttl: Math.ceil(expiresAt / 1000) };
-    await this.table.write([{ op: 'put', item, expect: 'absent' }]);
+    const pointer = { ...pointerKey(userId, item.pk), version: 1, ttl: item.ttl };
+    await this.table.write([
+      { op: 'put', item, expect: 'absent' },
+      { op: 'put', item: pointer, expect: 'any' },
+    ]);
     return token;
   }
 
@@ -59,6 +66,28 @@ export class SessionModel {
    * Effects: authenticate(token) returns undefined afterwards.
    */
   async endSession(token: string): Promise<void> {
-    await this.table.write([{ op: 'delete', key: sessionKey(token), expect: 'any' }]);
+    const key = sessionKey(token);
+    const session = await this.table.get(key);
+    const ops: WriteOp[] = [{ op: 'delete', key, expect: 'any' }];
+    if (session !== undefined) {
+      ops.push({ op: 'delete', key: pointerKey(session.userId as string, key.pk), expect: 'any' });
+    }
+    await this.table.write(ops);
+  }
+
+  /**
+   * Logs a user out everywhere (used when an account is suspended).
+   * Effects: authenticate returns undefined for every token issued to userId so far.
+   */
+  async endAllSessions(userId: string): Promise<void> {
+    const pointers = await this.table.query(`USER#${userId}`, { prefix: 'SESSION#' });
+    await Promise.all(
+      pointers.map((pointer) =>
+        this.table.write([
+          { op: 'delete', key: { pk: pointer.sk, sk: 'SESSION' }, expect: 'any' },
+          { op: 'delete', key: { pk: pointer.pk, sk: pointer.sk }, expect: 'any' },
+        ]),
+      ),
+    );
   }
 }

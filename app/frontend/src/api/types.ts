@@ -43,6 +43,8 @@ export interface UserProfile {
   readonly userId: string;
   readonly username: string;
   readonly profilePictureUrl: string | null;
+  /** WEB: present only on your own profile; true if you may open the admin page (OPEN-18). */
+  readonly isAdmin?: boolean;
 }
 
 /** How the user reacted to a song. Mirrors the Java `Feedback` enum. */
@@ -77,8 +79,8 @@ export interface UndoResult {
   readonly canUndo: boolean;
 }
 
-/** Mirrors the Java `LoginResult` enum. */
-export type LoginResult = 'SUCCESS' | 'WRONG_PASSWORD' | 'NO_ACCOUNT' | 'NOT_VERIFIED';
+/** Mirrors the Java `LoginResult` enum. WEB: SUSPENDED was added with the admin panel (OPEN-18). */
+export type LoginResult = 'SUCCESS' | 'WRONG_PASSWORD' | 'NO_ACCOUNT' | 'NOT_VERIFIED' | 'SUSPENDED';
 
 /**
  * WEB: the stub's `login` returns only a LoginResult and the view then calls `getUserId`.
@@ -86,7 +88,13 @@ export type LoginResult = 'SUCCESS' | 'WRONG_PASSWORD' | 'NO_ACCOUNT' | 'NOT_VER
  * session token that authenticates later requests (api.md Q-1).
  */
 export type LoginResponse =
-  | { readonly result: 'SUCCESS'; readonly userId: string; readonly token: string }
+  | {
+      readonly result: 'SUCCESS';
+      readonly userId: string;
+      readonly token: string;
+      /** WEB (OPEN-18): true if the user may open the admin page. Absent means false. */
+      readonly isAdmin?: boolean;
+    }
   | { readonly result: Exclude<LoginResult, 'SUCCESS'> };
 
 /** Mirrors the Java `CreateAccountResult` enum. */
@@ -130,4 +138,67 @@ export interface ChatHistory {
   /** Oldest first. */
   readonly messages: readonly ChatMessage[];
   readonly serverTime: string;
+}
+
+// ----- Admin panel and profile reports (WEB: not in the Java stubs; OPEN-18, api.md) -----
+
+/** Why a user reports a profile from the match screen. */
+export const REPORT_REASONS = ['FAKE_ACCOUNT', 'HARASSMENT', 'INAPPROPRIATE', 'SPAM', 'OTHER'] as const;
+export type ReportReason = (typeof REPORT_REASONS)[number];
+
+/** Longest free-text details on a report, and longest reason for a suspension. */
+export const MAX_REPORT_DETAILS = 500;
+export const MAX_SUSPEND_REASON = 300;
+
+/** A user as the admin page lists them. Times are milliseconds since the Unix epoch. */
+export interface AdminUser {
+  readonly userId: string;
+  readonly email: string;
+  readonly username: string;
+  /** Whether the email has been verified. */
+  readonly active: boolean;
+  readonly admin: boolean;
+  /** Always an admin; cannot be demoted or suspended from the page. */
+  readonly rootAdmin: boolean;
+  readonly suspended: { readonly at: number; readonly by: string; readonly reason: string } | null;
+  readonly createdAt: number;
+  readonly lastActiveAt: number | null;
+  readonly openReports: number;
+}
+
+export interface AdminPerson {
+  readonly userId: string;
+  readonly username: string;
+  readonly email: string;
+}
+
+/** A report about a profile, as the admin page shows it. */
+export interface AdminReport {
+  readonly reportId: string;
+  readonly reporter: AdminPerson;
+  readonly reported: AdminPerson;
+  readonly source: 'MATCH' | 'CHAT';
+  /** A ReportReason, or REPORTED_IN_CHAT for the chat screen's report button. */
+  readonly reason: ReportReason | 'REPORTED_IN_CHAT';
+  readonly details: string;
+  readonly createdAt: number;
+  readonly resolved: { readonly by: string; readonly at: number; readonly note: string } | null;
+}
+
+/** One admin action in the activity log. */
+export interface AuditEntry {
+  readonly at: number;
+  readonly adminId: string;
+  readonly action: 'SUSPEND' | 'UNSUSPEND' | 'VERIFY' | 'GRANT_ADMIN' | 'REVOKE_ADMIN' | 'RESOLVE_REPORT';
+  readonly targetId: string;
+  readonly detail: string;
+}
+
+/**
+ * WEB: a match the user said yes to that the other person has not answered yet, with that
+ * person's profile (api.md `GET /matches/outgoing`).
+ */
+export interface OutgoingMatch {
+  readonly match: Match;
+  readonly otherUser: UserProfile;
 }

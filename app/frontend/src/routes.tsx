@@ -10,6 +10,7 @@
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { BottomBarView } from './components/BottomBarView';
 import { useSession } from './session/SessionContext';
+import { AdminView } from './views/AdminView';
 import { ChatView } from './views/ChatView';
 import { CreateAccountView } from './views/CreateAccountView';
 import { HomeView } from './views/HomeView';
@@ -60,6 +61,7 @@ export function AppRoutes() {
         <Route element={<WithBottomBar />}>
           <Route path={PATHS.home} element={<HomeView />} />
           <Route path={PATHS.profile} element={<ProfileView />} />
+          <Route path={PATHS.admin} element={<AdminView />} />
           <Route path="/match/:matchId" element={<MatchView />} />
           <Route path={PATHS.chats} element={<MessageLogView />} />
           <Route path="/chats/:chatId" element={<ChatView />} />

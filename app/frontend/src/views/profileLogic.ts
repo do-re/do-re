@@ -4,10 +4,11 @@
  */
 
 /**
- * Largest picture the client will send. The stub only says "non-empty image file"; this cap
- * keeps an upload under AWS Lambda's ~6 MB request limit. Confirm with Felix (notes F-3).
+ * Largest picture the client will send: the server's limit (api.md Q-11,
+ * AccountModel.MAX_PICTURE_BYTES in the backend). Lambda's request limit is 6 MB after base64
+ * encoding, which is 4 MB of image.
  */
-export const MAX_PICTURE_BYTES = 5 * 1024 * 1024;
+export const MAX_PICTURE_BYTES = 4 * 1024 * 1024;
 
 /**
  * Same rule as AccountController.updateUsername: the username must be non-empty.
@@ -30,6 +31,6 @@ export function validatePicture(file: File | null): string | undefined {
   if (file === null) return 'Choose an image file.';
   if (!file.type.startsWith('image/')) return 'That file is not an image. Choose a JPG, PNG or other image file.';
   if (file.size === 0) return 'That file is empty. Choose another image.';
-  if (file.size > MAX_PICTURE_BYTES) return 'That image is too big. Choose one under 5 MB.';
+  if (file.size > MAX_PICTURE_BYTES) return 'That image is too big. Choose one under 4 MB.';
   return undefined;
 }

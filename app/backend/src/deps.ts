@@ -44,3 +44,12 @@ export function sha256Hex(text: string): string {
 export function pairId(a: string, b: string): string {
   return a < b ? `${a}_${b}` : `${b}_${a}`;
 }
+
+/**
+ * Requires: id was made by pairId and userId is one of its two users.
+ * @returns the other user of the pair
+ */
+export function otherOfPair(id: string, userId: string): string {
+  const [first, second] = id.split('_') as [string, string];
+  return first === userId ? second : first;
+}
